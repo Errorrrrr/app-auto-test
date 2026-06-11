@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from .config import Settings, get_settings
@@ -47,6 +48,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version="0.1.0",
         description="Local API and runner foundation for app automation.",
     )
+    web_dir = Path(__file__).parent / "web"
+    app.mount("/static", StaticFiles(directory=web_dir), name="static")
+
+    @app.get("/", include_in_schema=False)
+    def console_index() -> FileResponse:
+        return FileResponse(web_dir / "index.html")
+
+    @app.get("/console", include_in_schema=False)
+    def console_alias() -> FileResponse:
+        return FileResponse(web_dir / "index.html")
 
     @app.get("/api/v1/health", response_model=ApiResponse)
     def health() -> ApiResponse:
@@ -168,6 +179,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         updated = runner.start(run)
         return ApiResponse(data=updated)
 
+    @app.get("/api/v1/runs", response_model=ApiResponse)
+    def list_runs() -> ApiResponse:
+        raw_runs = store.load_state().get("runs", {})
+        runs = [TestRunDTO(**item) for item in raw_runs.values()]
+        runs.sort(key=lambda item: item.created_at, reverse=True)
+        return ApiResponse(data={"items": runs})
+
     @app.post("/api/v1/runs/{run_id}/start", response_model=ApiResponse)
     def start_run(run_id: str) -> ApiResponse:
         run = store.get_run(run_id)
@@ -224,4 +242,3 @@ def _parse_flow(flow_json: str):
 
 
 app = create_app()
-

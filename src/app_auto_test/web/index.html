@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>App Auto Test Console</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">Local automation MVP</p>
+      <h1>App Auto Test Console</h1>
+    </div>
+    <div class="header-actions">
+      <span class="status-pill" id="apiStatus">Checking API</span>
+      <button class="button secondary" id="refreshButton" type="button">Refresh</button>
+    </div>
+  </header>
+
+  <main class="console-grid">
+    <section class="panel setup-panel" aria-labelledby="setupTitle">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Test setup</p>
+          <h2 id="setupTitle">Create run</h2>
+        </div>
+        <span class="status-pill muted" id="executionMode">Execution unknown</span>
+      </div>
+
+      <form id="runForm" class="form-stack">
+        <label class="field">
+          <span>Test name</span>
+          <input id="testName" name="test_name" type="text" value="Android local smoke" autocomplete="off" />
+        </label>
+
+        <fieldset class="segmented" aria-label="Platform">
+          <legend>Platform</legend>
+          <label>
+            <input type="radio" name="platform" value="android" checked />
+            <span>Android</span>
+          </label>
+          <label>
+            <input type="radio" name="platform" value="ios" />
+            <span>iOS blocked</span>
+          </label>
+        </fieldset>
+
+        <label class="field">
+          <span>APK</span>
+          <input id="apkFile" name="apk" type="file" accept=".apk,application/vnd.android.package-archive" />
+        </label>
+
+        <label class="field">
+          <span>Package name</span>
+          <input id="packageName" name="package_name" type="text" placeholder="com.example.app" autocomplete="off" />
+        </label>
+
+        <label class="field">
+          <span>Goal</span>
+          <textarea id="testGoal" rows="3">open the app and verify the home screen</textarea>
+        </label>
+
+        <label class="field">
+          <span>Device or emulator</span>
+          <select id="deviceSelect"></select>
+        </label>
+
+        <fieldset class="segmented" aria-label="Run mode">
+          <legend>Run mode</legend>
+          <label>
+            <input type="radio" name="runMode" value="health_check" checked />
+            <span>Health check</span>
+          </label>
+          <label>
+            <input type="radio" name="runMode" value="execute" />
+            <span>Execute</span>
+          </label>
+        </fieldset>
+
+        <div class="button-row">
+          <button class="button secondary" id="generateButton" type="button">Generate sample</button>
+          <button class="button primary" id="createButton" type="submit">Create run</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel" aria-labelledby="stateTitle">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Capability</p>
+          <h2 id="stateTitle">Devices and sample</h2>
+        </div>
+        <button class="button ghost" id="checkCapabilityButton" type="button">Check</button>
+      </div>
+
+      <div class="subsection">
+        <div class="subsection-heading">
+          <h3>Selectable targets</h3>
+          <span id="deviceCount" class="meta">0 devices</span>
+        </div>
+        <div id="deviceList" class="device-list"></div>
+      </div>
+
+      <div class="subsection">
+        <div class="subsection-heading">
+          <h3>Capability result</h3>
+          <span id="capabilityReady" class="meta">Not checked</span>
+        </div>
+        <div id="capabilityPanel" class="empty-state">Run a check or create a test to view capability status.</div>
+      </div>
+
+      <div class="subsection">
+        <div class="subsection-heading">
+          <h3>Generated sample</h3>
+          <span id="sampleStatus" class="meta">No sample</span>
+        </div>
+        <textarea id="flowEditor" class="flow-editor" rows="13" spellcheck="false"></textarea>
+      </div>
+    </section>
+
+    <section class="panel report-panel" aria-labelledby="runTitle">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Run output</p>
+          <h2 id="runTitle">Status and report</h2>
+        </div>
+        <div class="button-row compact">
+          <button class="button ghost" id="exportHtmlButton" type="button" disabled>Export HTML</button>
+          <button class="button ghost" id="exportJsonButton" type="button" disabled>Export JSON</button>
+        </div>
+      </div>
+
+      <div id="runSummary" class="run-summary empty-state">No run selected.</div>
+
+      <div class="subsection">
+        <div class="subsection-heading">
+          <h3>Recent runs</h3>
+          <span id="runCount" class="meta">0 runs</span>
+        </div>
+        <div id="runList" class="run-list"></div>
+      </div>
+
+      <div class="subsection">
+        <div class="subsection-heading">
+          <h3>Events</h3>
+          <span id="eventCount" class="meta">0 events</span>
+        </div>
+        <div id="eventList" class="event-list"></div>
+      </div>
+
+      <div class="subsection">
+        <div class="subsection-heading">
+          <h3>Report</h3>
+          <span id="reportStatus" class="meta">Pending</span>
+        </div>
+        <div id="reportView" class="report-view empty-state">Report not generated.</div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

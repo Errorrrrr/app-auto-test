@@ -47,6 +47,11 @@ def test_create_run_with_uploaded_apk_generates_blocked_report(tmp_path: Path) -
     assert export_response.status_code == 200
     assert "text/html" in export_response.headers["content-type"]
 
+    list_response = client.get("/api/v1/runs")
+    assert list_response.status_code == 200
+    listed_runs = list_response.json()["data"]["items"]
+    assert listed_runs[0]["run_id"] == run["run_id"]
+
 
 def test_device_contract_returns_placeholder_when_adb_missing(tmp_path: Path) -> None:
     app = create_app(Settings(data_dir=tmp_path, adb_path=str(tmp_path / "missing-adb")))
@@ -60,3 +65,23 @@ def test_device_contract_returns_placeholder_when_adb_missing(tmp_path: Path) ->
     assert item["selectable"] is False
     assert item["blocked_reason"] == "ADB_NOT_FOUND"
 
+
+def test_console_routes_serve_static_assets(tmp_path: Path) -> None:
+    app = create_app(Settings(data_dir=tmp_path))
+    client = TestClient(app)
+
+    index_response = client.get("/")
+    assert index_response.status_code == 200
+    assert "App Auto Test Console" in index_response.text
+
+    console_response = client.get("/console")
+    assert console_response.status_code == 200
+    assert "Create run" in console_response.text
+
+    script_response = client.get("/static/app.js")
+    assert script_response.status_code == 200
+    assert "generateSample" in script_response.text
+
+    style_response = client.get("/static/styles.css")
+    assert style_response.status_code == 200
+    assert "console-grid" in style_response.text

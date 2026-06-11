@@ -21,7 +21,12 @@ pip install -e ".[dev]"
 uvicorn app_auto_test.main:app --reload
 ```
 
-API docs are available at `http://127.0.0.1:8000/docs`.
+Open the console at `http://127.0.0.1:8000/`. API docs are available at
+`http://127.0.0.1:8000/docs`.
+
+The console supports APK upload during run creation, device or emulator
+selection, sample flow generation, blocked capability display, run status,
+report viewing and HTML/JSON export.
 
 ## Key API Surface
 
@@ -30,6 +35,7 @@ API docs are available at `http://127.0.0.1:8000/docs`.
 - `POST /api/v1/samples/generate`
 - `POST /api/v1/assets/apk`
 - `POST /api/v1/runs` with multipart fields and an APK file
+- `GET /api/v1/runs`
 - `POST /api/v1/runs/{run_id}/start`
 - `GET /api/v1/runs/{run_id}`
 - `GET /api/v1/runs/{run_id}/events`
@@ -54,4 +60,3 @@ pytest
 ```
 
 The test suite uses temporary data directories and does not require a connected Android device.
-
