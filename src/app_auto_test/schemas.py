@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 def utc_now() -> str:
@@ -56,6 +56,17 @@ class RunMode(str, Enum):
     execute = "execute"
 
 
+class FlowAction(str, Enum):
+    launch_app = "launchApp"
+    tap_on = "tapOn"
+    input_text = "inputText"
+    assert_visible = "assertVisible"
+    scroll = "scroll"
+    back = "back"
+    wait = "wait"
+    take_screenshot = "takeScreenshot"
+
+
 class ApiError(BaseModel):
     code: str
     message: str
@@ -91,11 +102,16 @@ class CapabilityDTO(BaseModel):
 
 
 class FlowStepDTO(BaseModel):
-    action: str
+    action: FlowAction
     target: str | None = None
     text: str | None = None
     timeout_ms: int | None = None
     note: str | None = None
+
+    @field_validator("target", "text")
+    @classmethod
+    def reject_multiline_step_text(cls, value: str | None) -> str | None:
+        return _single_line(value)
 
 
 class SampleFlowDTO(BaseModel):
@@ -107,6 +123,11 @@ class SampleFlowDTO(BaseModel):
     steps: list[FlowStepDTO]
     requires_confirmation: bool = True
     created_at: str = Field(default_factory=utc_now)
+
+    @field_validator("package_name")
+    @classmethod
+    def reject_multiline_flow_text(cls, value: str) -> str:
+        return _single_line(value) or ""
 
 
 class GenerateSampleRequest(BaseModel):
@@ -188,3 +209,10 @@ class ToolManifestDTO(BaseModel):
 def path_to_str(path: Path | None) -> str | None:
     return str(path) if path is not None else None
 
+
+def _single_line(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if any(char in value for char in ("\r", "\n", "\x00")):
+        raise ValueError("Flow text fields must be single-line strings.")
+    return value

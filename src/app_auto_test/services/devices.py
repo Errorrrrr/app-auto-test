@@ -25,7 +25,8 @@ class DeviceService:
     ) -> CapabilityDTO:
         devices = self._list_android_devices()
         selected_device = next((item for item in devices if item.id == device_id), None)
-        adb_exists = self._adb_exists()
+        adb = self.resolve_adb_command()
+        adb_exists = adb is not None
         maestro_exists = shutil.which(self.settings.maestro_bin) is not None
         apk_present = bool(apk_path)
         package_present = bool(package_name)
@@ -129,16 +130,13 @@ class DeviceService:
             ],
         )
 
-    def _adb_exists(self) -> bool:
-        return shutil.which(self.settings.adb_path) is not None or shutil.which("adb") is not None
-
-    def _adb_command(self) -> str | None:
+    def resolve_adb_command(self) -> str | None:
         if shutil.which(self.settings.adb_path):
             return self.settings.adb_path
         return shutil.which("adb")
 
     def _list_android_devices(self) -> list[DeviceDTO]:
-        adb = self._adb_command()
+        adb = self.resolve_adb_command()
         if not adb:
             return [
                 DeviceDTO(
@@ -221,4 +219,3 @@ class DeviceService:
                 blocked_reason=",".join(capability.blocked_reasons),
             )
         ]
-

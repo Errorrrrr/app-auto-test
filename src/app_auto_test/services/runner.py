@@ -86,11 +86,21 @@ class LocalRunner:
             run.report_status = report.status
             return self.store.save_run(run)
 
+        adb = self.device_service.resolve_adb_command()
+        if not adb or not run.device_id:
+            run.status = RunStatus.blocked
+            run.blocked_reasons = ["ADB_OR_DEVICE_NOT_RESOLVED"]
+            run.next_actions = ["Select an online Android device and configure adb before execution."]
+            self._event(run, "RUN_BLOCKED", RunStatus.blocked, "Resolved adb command or deviceId is missing.")
+            report = self.report_service.generate(run)
+            run.report_status = report.status
+            return self.store.save_run(run)
+
         run.status = RunStatus.running
         self._event(run, "RUN_STARTED", RunStatus.running, "Android local execution started.")
         try:
             subprocess.run(
-                [self.settings.adb_path, "-s", run.device_id or "", "install", "-r", run.apk_asset.stored_path],
+                [adb, "-s", run.device_id, "install", "-r", run.apk_asset.stored_path],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -136,4 +146,3 @@ class LocalRunner:
             details=details or {},
         )
         self.store.append_event(run.run_id, event.model_dump())
-

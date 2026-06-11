@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 from fastapi.testclient import TestClient
 
@@ -64,6 +65,46 @@ def test_device_contract_returns_placeholder_when_adb_missing(tmp_path: Path) ->
     assert item["id"] == "android-adb-unavailable"
     assert item["selectable"] is False
     assert item["blocked_reason"] == "ADB_NOT_FOUND"
+
+
+def test_create_run_rejects_flow_yaml_injection(tmp_path: Path) -> None:
+    app = create_app(
+        Settings(
+            data_dir=tmp_path,
+            adb_path=str(tmp_path / "missing-adb"),
+            maestro_bin="missing-maestro",
+            allow_real_execution=False,
+        )
+    )
+    client = TestClient(app)
+    flow = {
+        "name": "malicious",
+        "platform": "android",
+        "package_name": "com.demo.app",
+        "steps": [
+            {
+                "action": "tapOn",
+                "target": "Login\n- back",
+            }
+        ],
+    }
+
+    response = client.post(
+        "/api/v1/runs",
+        data={
+            "test_name": "Smoke",
+            "platform": "android",
+            "device_id": "emulator-5554",
+            "package_name": "com.demo.app",
+            "sample_mode": "provided",
+            "flow_json": json.dumps(flow),
+            "run_mode": "execute",
+        },
+        files={"apk": ("app-release.apk", b"fake-apk", "application/vnd.android.package-archive")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "flowJson must be a valid SampleFlowDTO JSON object"
 
 
 def test_console_routes_serve_static_assets(tmp_path: Path) -> None:
