@@ -1,20 +1,21 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>App Auto Test Console</title>
+  <title>App 自动化测试控制台</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
   <header class="app-header">
     <div>
-      <p class="eyebrow">Local automation MVP</p>
-      <h1>App Auto Test Console</h1>
+      <p class="eyebrow">本地自动化 MVP</p>
+      <h1>App 自动化测试控制台</h1>
     </div>
     <div class="header-actions">
-      <span class="status-pill" id="apiStatus">Checking API</span>
-      <button class="button secondary" id="refreshButton" type="button">Refresh</button>
+      <span class="status-pill" id="apiStatus">正在检查 API</span>
+      <span class="status-pill muted" id="executionMode">执行开关未知</span>
+      <button class="button secondary" id="refreshButton" type="button">刷新</button>
     </div>
   </header>
 
@@ -22,139 +23,184 @@
     <section class="panel setup-panel" aria-labelledby="setupTitle">
       <div class="panel-heading">
         <div>
-          <p class="eyebrow">Test setup</p>
-          <h2 id="setupTitle">Create run</h2>
+          <p class="eyebrow">测试配置</p>
+          <h2 id="setupTitle">创建运行</h2>
         </div>
-        <span class="status-pill muted" id="executionMode">Execution unknown</span>
+        <button class="button ghost" id="checkCapabilityButton" type="button">检查能力</button>
       </div>
 
       <form id="runForm" class="form-stack">
         <label class="field">
-          <span>Test name</span>
-          <input id="testName" name="test_name" type="text" value="Android local smoke" autocomplete="off" />
+          <span>测试名称</span>
+          <input id="testName" name="test_name" type="text" value="Android 本地冒烟测试" autocomplete="off" />
         </label>
 
-        <fieldset class="segmented" aria-label="Platform">
-          <legend>Platform</legend>
+        <fieldset class="segmented" aria-label="测试平台">
+          <legend>测试平台</legend>
           <label>
             <input type="radio" name="platform" value="android" checked />
             <span>Android</span>
           </label>
           <label>
             <input type="radio" name="platform" value="ios" />
-            <span>iOS blocked</span>
+            <span>iOS 签名待补齐</span>
           </label>
         </fieldset>
 
         <label class="field">
-          <span>APK</span>
+          <span>APK 文件</span>
           <input id="apkFile" name="apk" type="file" accept=".apk,application/vnd.android.package-archive" />
         </label>
 
         <label class="field">
-          <span>Package name</span>
+          <span>包名</span>
           <input id="packageName" name="package_name" type="text" placeholder="com.example.app" autocomplete="off" />
         </label>
 
         <label class="field">
-          <span>Goal</span>
-          <textarea id="testGoal" rows="3">open the app and verify the home screen</textarea>
+          <span>测试目标</span>
+          <textarea id="testGoal" rows="3">打开应用并确认首页可见</textarea>
         </label>
 
         <label class="field">
-          <span>Device or emulator</span>
+          <span>设备或模拟器</span>
           <select id="deviceSelect"></select>
         </label>
 
-        <fieldset class="segmented" aria-label="Run mode">
-          <legend>Run mode</legend>
+        <fieldset class="segmented" aria-label="运行模式">
+          <legend>运行模式</legend>
           <label>
             <input type="radio" name="runMode" value="health_check" checked />
-            <span>Health check</span>
+            <span>仅检查环境</span>
           </label>
           <label>
             <input type="radio" name="runMode" value="execute" />
-            <span>Execute</span>
+            <span>真实执行</span>
           </label>
         </fieldset>
 
         <div class="button-row">
-          <button class="button secondary" id="generateButton" type="button">Generate sample</button>
-          <button class="button primary" id="createButton" type="submit">Create run</button>
+          <button class="button secondary" id="generateButton" type="button">生成样例 JSON</button>
+          <button class="button primary" id="createButton" type="submit">创建运行</button>
         </div>
       </form>
     </section>
 
-    <section class="panel" aria-labelledby="stateTitle">
+    <section class="panel flow-panel" aria-labelledby="agentTitle">
       <div class="panel-heading">
         <div>
-          <p class="eyebrow">Capability</p>
-          <h2 id="stateTitle">Devices and sample</h2>
+          <p class="eyebrow">AI 用例生成</p>
+          <h2 id="agentTitle">Codex / Cursor 交互</h2>
         </div>
-        <button class="button ghost" id="checkCapabilityButton" type="button">Check</button>
+        <span id="toolManifestStatus" class="meta">工具边界待加载</span>
+      </div>
+
+      <div class="subsection first">
+        <fieldset class="segmented three" aria-label="用例来源">
+          <legend>用例来源</legend>
+          <label>
+            <input type="radio" name="agentProvider" value="codex" checked />
+            <span>Codex</span>
+          </label>
+          <label>
+            <input type="radio" name="agentProvider" value="cursor" />
+            <span>Cursor</span>
+          </label>
+          <label>
+            <input type="radio" name="agentProvider" value="manual" />
+            <span>手动</span>
+          </label>
+        </fieldset>
+
+        <div id="toolBoundaryPanel" class="capability-grid"></div>
+
+        <label class="field">
+          <span>可复制给 Agent 的提示词</span>
+          <textarea id="agentPrompt" class="prompt-editor" rows="9" readonly></textarea>
+        </label>
+
+        <div class="button-row">
+          <button class="button secondary" id="copyPromptButton" type="button">复制提示词</button>
+          <button class="button ghost" id="refreshManifestButton" type="button">刷新工具边界</button>
+        </div>
       </div>
 
       <div class="subsection">
         <div class="subsection-heading">
-          <h3>Selectable targets</h3>
-          <span id="deviceCount" class="meta">0 devices</span>
+          <h3>SampleFlowDTO JSON</h3>
+          <span id="flowJsonStatus" class="meta">待生成或导入</span>
+        </div>
+        <textarea id="flowEditor" class="flow-editor" rows="13" spellcheck="false"></textarea>
+        <div class="button-row">
+          <button class="button secondary" id="validateFlowButton" type="button">校验 JSON</button>
+          <button class="button primary" id="confirmFlowButton" type="button" disabled>确认用例</button>
+        </div>
+        <div id="validationPanel" class="empty-state">只接受 SampleFlowDTO JSON，不接受直接 Maestro YAML。校验通过并确认后才能作为用例提交。</div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="maestroTitle">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Maestro 执行</p>
+          <h2 id="maestroTitle">能力与阻断</h2>
+        </div>
+        <span id="capabilityReady" class="meta">尚未检查</span>
+      </div>
+
+      <div class="subsection first">
+        <div class="subsection-heading">
+          <h3>可选目标</h3>
+          <span id="deviceCount" class="meta">0 个目标</span>
         </div>
         <div id="deviceList" class="device-list"></div>
       </div>
 
       <div class="subsection">
         <div class="subsection-heading">
-          <h3>Capability result</h3>
-          <span id="capabilityReady" class="meta">Not checked</span>
+          <h3>能力检查结果</h3>
+          <span id="sampleStatus" class="meta">无样例</span>
         </div>
-        <div id="capabilityPanel" class="empty-state">Run a check or create a test to view capability status.</div>
-      </div>
-
-      <div class="subsection">
-        <div class="subsection-heading">
-          <h3>Generated sample</h3>
-          <span id="sampleStatus" class="meta">No sample</span>
-        </div>
-        <textarea id="flowEditor" class="flow-editor" rows="13" spellcheck="false"></textarea>
+        <div id="capabilityPanel" class="empty-state">点击检查能力或创建运行后查看 ADB、Maestro、APK、包名和真实执行开关状态。</div>
       </div>
     </section>
 
     <section class="panel report-panel" aria-labelledby="runTitle">
       <div class="panel-heading">
         <div>
-          <p class="eyebrow">Run output</p>
-          <h2 id="runTitle">Status and report</h2>
+          <p class="eyebrow">结果报告</p>
+          <h2 id="runTitle">状态与报告</h2>
         </div>
         <div class="button-row compact">
-          <button class="button ghost" id="exportHtmlButton" type="button" disabled>Export HTML</button>
-          <button class="button ghost" id="exportJsonButton" type="button" disabled>Export JSON</button>
+          <button class="button ghost" id="exportHtmlButton" type="button" disabled>导出 HTML</button>
+          <button class="button ghost" id="exportJsonButton" type="button" disabled>导出 JSON</button>
         </div>
       </div>
 
-      <div id="runSummary" class="run-summary empty-state">No run selected.</div>
+      <div id="runSummary" class="run-summary empty-state">尚未选择运行。</div>
 
       <div class="subsection">
         <div class="subsection-heading">
-          <h3>Recent runs</h3>
-          <span id="runCount" class="meta">0 runs</span>
+          <h3>最近运行</h3>
+          <span id="runCount" class="meta">0 条运行</span>
         </div>
         <div id="runList" class="run-list"></div>
       </div>
 
       <div class="subsection">
         <div class="subsection-heading">
-          <h3>Events</h3>
-          <span id="eventCount" class="meta">0 events</span>
+          <h3>事件时间线</h3>
+          <span id="eventCount" class="meta">0 条事件</span>
         </div>
         <div id="eventList" class="event-list"></div>
       </div>
 
       <div class="subsection">
         <div class="subsection-heading">
-          <h3>Report</h3>
-          <span id="reportStatus" class="meta">Pending</span>
+          <h3>报告预览</h3>
+          <span id="reportStatus" class="meta">待生成</span>
         </div>
-        <div id="reportView" class="report-view empty-state">Report not generated.</div>
+        <div id="reportView" class="report-view empty-state">报告尚未生成。</div>
       </div>
     </section>
   </main>
