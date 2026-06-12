@@ -225,15 +225,18 @@ def test_console_routes_serve_static_assets(tmp_path: Path) -> None:
 
     index_response = client.get("/")
     assert index_response.status_code == 200
-    assert "App Auto Test Console" in index_response.text
+    assert "App 自动化测试控制台" in index_response.text
+    assert "Codex / Cursor 交互" in index_response.text
 
     console_response = client.get("/console")
     assert console_response.status_code == 200
-    assert "Create run" in console_response.text
+    assert "创建运行" in console_response.text
+    assert "iOS 签名待补齐" in console_response.text
 
     script_response = client.get("/static/app.js")
     assert script_response.status_code == 200
-    assert "generateSample" in script_response.text
+    assert "renderAgentPrompt" in script_response.text
+    assert "SampleFlowDTO JSON" in script_response.text
 
     style_response = client.get("/static/styles.css")
     assert style_response.status_code == 200
