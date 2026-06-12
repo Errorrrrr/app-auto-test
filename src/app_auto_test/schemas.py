@@ -56,6 +56,19 @@ class RunMode(str, Enum):
     execute = "execute"
 
 
+class AgentProvider(str, Enum):
+    codex = "codex"
+    cursor = "cursor"
+    manual = "manual"
+
+
+class FlowReviewStatus(str, Enum):
+    draft = "draft"
+    validated = "validated"
+    confirmed = "confirmed"
+    rejected = "rejected"
+
+
 class FlowAction(str, Enum):
     launch_app = "launchApp"
     tap_on = "tapOn"
@@ -130,6 +143,35 @@ class SampleFlowDTO(BaseModel):
         return _single_line(value) or ""
 
 
+class FlowValidationRequest(BaseModel):
+    flow_json: str | None = None
+    flow: dict[str, Any] | None = None
+    platform: Platform | None = None
+    package_name: str | None = None
+
+    @field_validator("flow_json")
+    @classmethod
+    def reject_multiline_payload_control_chars(cls, value: str | None) -> str | None:
+        if value is not None and "\x00" in value:
+            raise ValueError("flowJson must not contain NUL bytes.")
+        return value
+
+
+class FlowValidationErrorDTO(BaseModel):
+    code: str
+    field: str | None = None
+    message: str
+
+
+class FlowValidationResultDTO(BaseModel):
+    valid: bool
+    flow: SampleFlowDTO | None = None
+    errors: list[FlowValidationErrorDTO] = Field(default_factory=list)
+    action_whitelist: list[str] = Field(
+        default_factory=lambda: [action.value for action in FlowAction]
+    )
+
+
 class GenerateSampleRequest(BaseModel):
     app_name: str = "Android App"
     package_name: str | None = None
@@ -156,6 +198,18 @@ class CreateRunRequest(BaseModel):
     sample_mode: Literal["auto", "provided"] = "auto"
     flow: SampleFlowDTO | None = None
     run_mode: RunMode = RunMode.health_check
+    agent_provider: AgentProvider = AgentProvider.manual
+    agent_goal: str | None = None
+    flow_review_status: FlowReviewStatus = FlowReviewStatus.draft
+
+
+class RunArtifactDTO(BaseModel):
+    name: str
+    kind: Literal["maestro_flow", "maestro_stdout", "maestro_stderr", "execution_json"]
+    path: str
+    media_type: str
+    size_bytes: int
+    created_at: str = Field(default_factory=utc_now)
 
 
 class RunEventDTO(BaseModel):
@@ -191,6 +245,11 @@ class TestRunDTO(BaseModel):
     package_name: str | None = None
     apk_asset: ApkAssetDTO | None = None
     sample_flow: SampleFlowDTO | None = None
+    agent_provider: AgentProvider = AgentProvider.manual
+    agent_goal: str | None = None
+    flow_review_status: FlowReviewStatus = FlowReviewStatus.draft
+    flow_validation_errors: list[str] = Field(default_factory=list)
+    artifacts: list[RunArtifactDTO] = Field(default_factory=list)
     report_status: ReportStatus = ReportStatus.pending
     blocked_reasons: list[str] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)

@@ -32,6 +32,7 @@ class ReportService:
             "report": report.model_dump(),
             "run": run.model_dump(),
             "events": events,
+            "artifacts": [artifact.model_dump() for artifact in run.artifacts],
             "generatedAt": utc_now(),
         }
         (report_dir / "report.json").write_text(
@@ -65,10 +66,17 @@ class ReportService:
         run = payload["run"]
         report = payload["report"]
         events = payload["events"]
+        artifacts = payload.get("artifacts", [])
         event_items = "\n".join(
             f"<li><strong>{html.escape(event['event_type'])}</strong>: {html.escape(event['message'])}</li>"
             for event in events
         )
+        artifact_items = "\n".join(
+            f"<li><code>{html.escape(artifact['name'])}</code> ({html.escape(artifact['kind'])})</li>"
+            for artifact in artifacts
+        )
+        if not artifact_items:
+            artifact_items = "<li>No artifacts generated.</li>"
         actions = "\n".join(
             f"<li>{html.escape(action)}</li>" for action in report.get("next_actions", [])
         )
@@ -90,9 +98,12 @@ class ReportService:
 <body>
   <h1>{html.escape(run["test_name"])}</h1>
   <p class="status">Run status: <code>{html.escape(run["status"])}</code></p>
+  <p>Agent provider: <code>{html.escape(run.get("agent_provider", "manual"))}</code></p>
   <p>{html.escape(report["result_summary"])}</p>
   <h2>Blocked Reasons</h2>
   <p>{html.escape(", ".join(run.get("blocked_reasons", [])) or "None")}</p>
+  <h2>Artifacts</h2>
+  <ul>{artifact_items}</ul>
   <h2>Next Actions</h2>
   <ul>{actions}</ul>
   <h2>Events</h2>
@@ -100,4 +111,3 @@ class ReportService:
 </body>
 </html>
 """
-

@@ -10,9 +10,14 @@ from pydantic import ValidationError
 
 from .config import Settings, get_settings
 from .schemas import (
+    AgentProvider,
     ApiError,
     ApiResponse,
-    CreateRunRequest,
+    FlowAction,
+    FlowReviewStatus,
+    FlowValidationErrorDTO,
+    FlowValidationRequest,
+    FlowValidationResultDTO,
     GenerateSampleRequest,
     Platform,
     RunMode,
@@ -73,17 +78,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def tool_manifest() -> ApiResponse:
         return ApiResponse(
             data=ToolManifestDTO(
-                allowed_tools=[
-                    "launchApp",
-                    "tapOn",
-                    "inputText",
-                    "assertVisible",
-                    "scroll",
-                    "back",
-                    "wait",
-                    "takeScreenshot",
-                    "collectLogs",
-                ],
+                allowed_tools=[action.value for action in FlowAction],
                 denied_tools=[
                     "shell",
                     "network_request",
@@ -121,6 +116,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def generate_sample(request: GenerateSampleRequest) -> ApiResponse:
         return ApiResponse(data=sample_service.generate(request))
 
+    @app.post("/api/v1/flows/validate", response_model=ApiResponse)
+    def validate_flow(request: FlowValidationRequest) -> ApiResponse:
+        return ApiResponse(data=_validate_flow_payload(request))
+
     @app.post("/api/v1/assets/apk", response_model=ApiResponse)
     async def upload_apk(apk: UploadFile = File(...)) -> ApiResponse:
         asset = await asset_service.save_apk(apk)
@@ -136,6 +135,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         sample_mode: str = Form(default="auto"),
         flow_json: str | None = Form(default=None),
         run_mode: RunMode = Form(default=RunMode.health_check),
+        agent_provider: AgentProvider = Form(default=AgentProvider.manual),
+        agent_goal: str | None = Form(default=None),
+        flow_review_status: FlowReviewStatus = Form(default=FlowReviewStatus.draft),
     ) -> ApiResponse:
         if platform == Platform.ios:
             capability = device_service.check_ios_capability()
@@ -152,10 +154,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         effective_package = package_name or asset.package_name
         flow = None
         if sample_mode == "provided" and flow_json:
-            try:
-                flow = _parse_flow(flow_json)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            flow_validation = _validate_flow_payload(
+                FlowValidationRequest(
+                    flow_json=flow_json,
+                    platform=platform,
+                    package_name=effective_package,
+                )
+            )
+            if not flow_validation.valid or not flow_validation.flow:
+                raise HTTPException(
+                    status_code=400,
+                    detail="flowJson must be a valid SampleFlowDTO JSON object",
+                )
+            flow = flow_validation.flow
+            effective_package = effective_package or flow.package_name
         else:
             flow = sample_service.generate(
                 GenerateSampleRequest(
@@ -174,6 +186,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             package_name=effective_package,
             apk_asset=asset,
             sample_flow=flow,
+            agent_provider=agent_provider,
+            agent_goal=agent_goal,
+            flow_review_status=flow_review_status,
         )
         store.save_run(run)
         updated = runner.start(run)
@@ -206,6 +221,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Run not found")
         return ApiResponse(data={"items": store.read_events(run_id)})
 
+    @app.get("/api/v1/runs/{run_id}/artifacts", response_model=ApiResponse)
+    def list_artifacts(run_id: str) -> ApiResponse:
+        run = store.get_run(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return ApiResponse(data={"items": runner.refresh_artifacts(run)})
+
+    @app.get("/api/v1/runs/{run_id}/artifacts/maestro-flow")
+    def get_maestro_flow(run_id: str) -> FileResponse:
+        if not store.get_run(run_id):
+            raise HTTPException(status_code=404, detail="Run not found")
+        path = store.run_dir(run_id) / "flow.yaml"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="Maestro flow artifact not found")
+        return FileResponse(
+            path=path,
+            media_type="text/yaml",
+            filename=f"{run_id}-flow.yaml",
+        )
+
     @app.get("/api/v1/runs/{run_id}/report", response_model=ApiResponse)
     def get_report(run_id: str) -> ApiResponse:
         if not store.get_run(run_id):
@@ -232,13 +267,91 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
-def _parse_flow(flow_json: str):
+def _validate_flow_payload(request: FlowValidationRequest) -> FlowValidationResultDTO:
     from .schemas import SampleFlowDTO
 
+    errors: list[FlowValidationErrorDTO] = []
+    if request.flow_json is not None and request.flow is not None:
+        errors.append(
+            FlowValidationErrorDTO(
+                code="FLOW_PAYLOAD_AMBIGUOUS",
+                message="Provide either flowJson or flow, not both.",
+            )
+        )
+        return FlowValidationResultDTO(valid=False, errors=errors)
+
+    raw_payload = request.flow
+    if request.flow_json is not None:
+        try:
+            raw_payload = json.loads(request.flow_json)
+        except json.JSONDecodeError:
+            errors.append(
+                FlowValidationErrorDTO(
+                    code="FLOW_JSON_INVALID",
+                    field="flowJson",
+                    message="flowJson must be a JSON SampleFlowDTO object, not Maestro YAML or free text.",
+                )
+            )
+            return FlowValidationResultDTO(valid=False, errors=errors)
+
+    if raw_payload is None:
+        errors.append(
+            FlowValidationErrorDTO(
+                code="FLOW_PAYLOAD_MISSING",
+                message="Provide a SampleFlowDTO JSON object to validate.",
+            )
+        )
+        return FlowValidationResultDTO(valid=False, errors=errors)
+    if not isinstance(raw_payload, dict):
+        errors.append(
+            FlowValidationErrorDTO(
+                code="FLOW_PAYLOAD_NOT_OBJECT",
+                message="SampleFlowDTO must be a JSON object.",
+            )
+        )
+        return FlowValidationResultDTO(valid=False, errors=errors)
+
     try:
-        return SampleFlowDTO(**json.loads(flow_json))
-    except (json.JSONDecodeError, ValidationError) as exc:
-        raise ValueError("flowJson must be a valid SampleFlowDTO JSON object") from exc
+        flow = SampleFlowDTO.model_validate(raw_payload)
+    except ValidationError as exc:
+        return FlowValidationResultDTO(
+            valid=False,
+            errors=[
+                FlowValidationErrorDTO(
+                    code="FLOW_SCHEMA_INVALID",
+                    field=".".join(str(part) for part in error["loc"]) or None,
+                    message=str(error["msg"]),
+                )
+                for error in exc.errors()
+            ],
+        )
+
+    if request.platform and flow.platform != request.platform:
+        errors.append(
+            FlowValidationErrorDTO(
+                code="FLOW_PLATFORM_MISMATCH",
+                field="platform",
+                message="Flow platform must match the selected run platform.",
+            )
+        )
+    if request.package_name and flow.package_name != request.package_name:
+        errors.append(
+            FlowValidationErrorDTO(
+                code="FLOW_PACKAGE_NAME_MISMATCH",
+                field="package_name",
+                message="Flow packageName must match the uploaded app packageName.",
+            )
+        )
+    if not flow.steps:
+        errors.append(
+            FlowValidationErrorDTO(
+                code="FLOW_STEPS_EMPTY",
+                field="steps",
+                message="Flow must contain at least one controlled action.",
+            )
+        )
+
+    return FlowValidationResultDTO(valid=not errors, flow=None if errors else flow, errors=errors)
 
 
 app = create_app()

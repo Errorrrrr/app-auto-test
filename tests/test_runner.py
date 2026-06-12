@@ -62,9 +62,10 @@ def test_runner_writes_events_and_report_when_blocked(tmp_path: Path) -> None:
     assert updated.status == RunStatus.blocked
     assert (tmp_path / "runs" / run.run_id / "flow.yaml").exists()
     assert (tmp_path / "runs" / run.run_id / "report" / "report.html").exists()
+    assert [artifact.name for artifact in updated.artifacts] == ["flow.yaml"]
     assert [event["event_type"] for event in store.read_events(run.run_id)] == [
         "HEALTH_CHECKED",
-        "SAMPLE_READY",
+        "MAESTRO_FLOW_READY",
         "RUN_BLOCKED",
     ]
 
@@ -149,4 +150,13 @@ def test_runner_uses_resolved_path_adb_when_configured_adb_missing(
     assert capability.ready is True
     assert device_service.resolve_adb_command() == str(fake_adb)
     assert updated.status == RunStatus.passed
+    assert (tmp_path / "runs" / run.run_id / "maestro-stdout.log").exists()
+    assert (tmp_path / "runs" / run.run_id / "maestro-stderr.log").exists()
+    assert (tmp_path / "runs" / run.run_id / "execution.json").exists()
+    assert {artifact.name for artifact in updated.artifacts} == {
+        "flow.yaml",
+        "maestro-stdout.log",
+        "maestro-stderr.log",
+        "execution.json",
+    }
     assert str(fake_adb) in command_log.read_text(encoding="utf-8")
