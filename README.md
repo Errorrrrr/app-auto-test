@@ -5,6 +5,7 @@ Backend foundation for the local app automation MVP.
 The first stage is a Codex-only + Android local runner skeleton:
 
 - upload an APK at test-run time
+- upload txt/md/docx testcase files into reviewed `SampleFlowDTO` drafts
 - list selectable Android devices or emulators
 - generate an editable sample flow automatically
 - validate imported Codex/Cursor `SampleFlowDTO` JSON before run creation
@@ -37,6 +38,10 @@ report viewing and HTML/JSON export.
 - `GET /api/v1/tools/manifest`
 - `POST /api/v1/samples/generate`
 - `POST /api/v1/flows/validate`
+- `POST /api/v1/testcase-files`
+- `GET /api/v1/testcase-files/{draft_id}`
+- `POST /api/v1/testcase-files/{draft_id}/confirm`
+- `POST /api/v1/testcase-files/{draft_id}/reject`
 - `POST /api/v1/assets/apk`
 - `POST /api/v1/runs` with multipart fields and an APK file
 - `GET /api/v1/runs`

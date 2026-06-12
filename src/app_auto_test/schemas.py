@@ -69,6 +69,28 @@ class FlowReviewStatus(str, Enum):
     rejected = "rejected"
 
 
+class TestcaseDraftStatus(str, Enum):
+    uploaded = "uploaded"
+    extracting = "extracting"
+    extract_failed = "extract_failed"
+    privacy_scanning = "privacy_scanning"
+    privacy_blocked = "privacy_blocked"
+    privacy_failed = "privacy_failed"
+    parsed = "parsed"
+    validation_failed = "validation_failed"
+    validated = "validated"
+    confirmed = "confirmed"
+    rejected = "rejected"
+
+
+class PrivacyStatus(str, Enum):
+    unscanned = "unscanned"
+    clean = "clean"
+    redacted = "redacted"
+    blocked = "blocked"
+    failed = "failed"
+
+
 class FlowAction(str, Enum):
     launch_app = "launchApp"
     tap_on = "tapOn"
@@ -190,6 +212,60 @@ class ApkAssetDTO(BaseModel):
     uploaded_at: str = Field(default_factory=utc_now)
 
 
+class TestcaseFileAssetDTO(BaseModel):
+    asset_id: str
+    file_name: str
+    content_type: str
+    size_bytes: int
+    sha256: str
+    stored_path: str
+    uploaded_at: str = Field(default_factory=utc_now)
+
+
+class PrivacyFindingDTO(BaseModel):
+    type: str
+    severity: Literal["info", "warning", "blocker"] = "warning"
+    action: Literal["redacted", "blocked"]
+    count: int
+    fields: list[str] = Field(default_factory=list)
+
+
+class TestcaseFlowDraftDTO(BaseModel):
+    draft_id: str
+    asset: TestcaseFileAssetDTO
+    platform: Platform = Platform.android
+    package_name: str
+    test_name: str | None = None
+    status: TestcaseDraftStatus = TestcaseDraftStatus.uploaded
+    privacy_status: PrivacyStatus = PrivacyStatus.unscanned
+    flow_review_status: FlowReviewStatus = FlowReviewStatus.draft
+    redacted_preview: str = ""
+    sample_flow: SampleFlowDTO | None = None
+    validation: FlowValidationResultDTO | None = None
+    privacy_findings: list[PrivacyFindingDTO] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    unmapped_fragments: list[str] = Field(default_factory=list)
+    confirmed_flow_hash: str | None = None
+    created_at: str = Field(default_factory=utc_now)
+    updated_at: str = Field(default_factory=utc_now)
+
+
+class ConfirmTestcaseFlowDraftRequest(BaseModel):
+    flow_json: str | None = None
+    flow: dict[str, Any] | None = None
+
+    @field_validator("flow_json")
+    @classmethod
+    def reject_nul_payload(cls, value: str | None) -> str | None:
+        if value is not None and "\x00" in value:
+            raise ValueError("flowJson must not contain NUL bytes.")
+        return value
+
+
+class RejectTestcaseFlowDraftRequest(BaseModel):
+    reason: str | None = None
+
+
 class CreateRunRequest(BaseModel):
     test_name: str = "Android local MVP run"
     platform: Platform = Platform.android
@@ -201,6 +277,7 @@ class CreateRunRequest(BaseModel):
     agent_provider: AgentProvider = AgentProvider.manual
     agent_goal: str | None = None
     flow_review_status: FlowReviewStatus = FlowReviewStatus.draft
+    flow_draft_id: str | None = None
 
 
 class RunArtifactDTO(BaseModel):
@@ -245,6 +322,7 @@ class TestRunDTO(BaseModel):
     package_name: str | None = None
     apk_asset: ApkAssetDTO | None = None
     sample_flow: SampleFlowDTO | None = None
+    flow_draft_id: str | None = None
     agent_provider: AgentProvider = AgentProvider.manual
     agent_goal: str | None = None
     flow_review_status: FlowReviewStatus = FlowReviewStatus.draft

@@ -4,24 +4,37 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .schemas import ApkAssetDTO, TestRunDTO, utc_now
+from .schemas import (
+    ApkAssetDTO,
+    TestRunDTO,
+    TestcaseFileAssetDTO,
+    TestcaseFlowDraftDTO,
+    utc_now,
+)
 
 
 class JsonStore:
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
         self.assets_dir = data_dir / "assets"
+        self.testcase_assets_dir = data_dir / "testcase-assets"
         self.runs_dir = data_dir / "runs"
         self.state_path = data_dir / "state.json"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.assets_dir.mkdir(parents=True, exist_ok=True)
+        self.testcase_assets_dir.mkdir(parents=True, exist_ok=True)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
 
     def load_state(self) -> dict[str, Any]:
         if not self.state_path.exists():
-            return {"assets": {}, "runs": {}}
+            return {"assets": {}, "testcase_assets": {}, "testcase_drafts": {}, "runs": {}}
         with self.state_path.open("r", encoding="utf-8") as fh:
-            return json.load(fh)
+            state = json.load(fh)
+        state.setdefault("assets", {})
+        state.setdefault("testcase_assets", {})
+        state.setdefault("testcase_drafts", {})
+        state.setdefault("runs", {})
+        return state
 
     def save_state(self, state: dict[str, Any]) -> None:
         tmp_path = self.state_path.with_suffix(".tmp")
@@ -39,6 +52,29 @@ class JsonStore:
         state = self.load_state()
         raw = state.get("assets", {}).get(asset_id)
         return ApkAssetDTO(**raw) if raw else None
+
+    def save_testcase_asset(self, asset: TestcaseFileAssetDTO) -> TestcaseFileAssetDTO:
+        state = self.load_state()
+        state.setdefault("testcase_assets", {})[asset.asset_id] = asset.model_dump()
+        self.save_state(state)
+        return asset
+
+    def get_testcase_asset(self, asset_id: str) -> TestcaseFileAssetDTO | None:
+        state = self.load_state()
+        raw = state.get("testcase_assets", {}).get(asset_id)
+        return TestcaseFileAssetDTO(**raw) if raw else None
+
+    def save_testcase_draft(self, draft: TestcaseFlowDraftDTO) -> TestcaseFlowDraftDTO:
+        state = self.load_state()
+        draft.updated_at = utc_now()
+        state.setdefault("testcase_drafts", {})[draft.draft_id] = draft.model_dump()
+        self.save_state(state)
+        return draft
+
+    def get_testcase_draft(self, draft_id: str) -> TestcaseFlowDraftDTO | None:
+        state = self.load_state()
+        raw = state.get("testcase_drafts", {}).get(draft_id)
+        return TestcaseFlowDraftDTO(**raw) if raw else None
 
     def save_run(self, run: TestRunDTO) -> TestRunDTO:
         state = self.load_state()
@@ -68,4 +104,3 @@ class JsonStore:
             return []
         with events_path.open("r", encoding="utf-8") as fh:
             return [json.loads(line) for line in fh if line.strip()]
-

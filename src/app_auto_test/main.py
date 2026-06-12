@@ -1,35 +1,38 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import ValidationError
 
 from .config import Settings, get_settings
 from .schemas import (
     AgentProvider,
     ApiError,
     ApiResponse,
+    ConfirmTestcaseFlowDraftRequest,
     FlowAction,
     FlowReviewStatus,
-    FlowValidationErrorDTO,
     FlowValidationRequest,
     FlowValidationResultDTO,
     GenerateSampleRequest,
     Platform,
+    PrivacyStatus,
+    RejectTestcaseFlowDraftRequest,
     RunMode,
+    TestcaseDraftStatus,
     TestRunDTO,
     ToolManifestDTO,
     new_id,
 )
 from .services.assets import AssetService
 from .services.devices import DeviceService
+from .services.flow_validation import flow_hash, validate_flow_payload
 from .services.reports import ReportService
 from .services.runner import LocalRunner
 from .services.samples import SampleService
+from .services.testcase_files import TestcaseFileError, TestcaseFileService
 from .storage import JsonStore
 
 
@@ -37,6 +40,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     store = JsonStore(settings.data_dir)
     asset_service = AssetService(store)
+    testcase_file_service = TestcaseFileService(store)
     device_service = DeviceService(settings)
     sample_service = SampleService()
     report_service = ReportService(store)
@@ -120,6 +124,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def validate_flow(request: FlowValidationRequest) -> ApiResponse:
         return ApiResponse(data=_validate_flow_payload(request))
 
+    @app.post("/api/v1/testcase-files", response_model=ApiResponse)
+    async def upload_testcase_file(
+        file: UploadFile = File(...),
+        platform: Platform = Form(default=Platform.android),
+        package_name: str = Form(...),
+        test_name: str | None = Form(default=None),
+    ) -> ApiResponse:
+        try:
+            draft = await testcase_file_service.create_draft(
+                upload=file,
+                platform=platform,
+                package_name=package_name,
+                test_name=test_name,
+            )
+        except TestcaseFileError as exc:
+            _raise_api_error(exc.code, exc.message, exc.status_code)
+        return ApiResponse(data=draft)
+
+    @app.get("/api/v1/testcase-files/{draft_id}", response_model=ApiResponse)
+    def get_testcase_file_draft(draft_id: str) -> ApiResponse:
+        try:
+            return ApiResponse(data=testcase_file_service.get_draft(draft_id))
+        except TestcaseFileError as exc:
+            _raise_api_error(exc.code, exc.message, exc.status_code)
+
+    @app.post("/api/v1/testcase-files/{draft_id}/confirm", response_model=ApiResponse)
+    def confirm_testcase_file_draft(
+        draft_id: str,
+        request: ConfirmTestcaseFlowDraftRequest,
+    ) -> ApiResponse:
+        try:
+            return ApiResponse(data=testcase_file_service.confirm_draft(draft_id, request))
+        except TestcaseFileError as exc:
+            _raise_api_error(exc.code, exc.message, exc.status_code)
+
+    @app.post("/api/v1/testcase-files/{draft_id}/reject", response_model=ApiResponse)
+    def reject_testcase_file_draft(
+        draft_id: str,
+        request: RejectTestcaseFlowDraftRequest | None = None,
+    ) -> ApiResponse:
+        _ = request
+        try:
+            return ApiResponse(data=testcase_file_service.reject_draft(draft_id))
+        except TestcaseFileError as exc:
+            _raise_api_error(exc.code, exc.message, exc.status_code)
+
     @app.post("/api/v1/assets/apk", response_model=ApiResponse)
     async def upload_apk(apk: UploadFile = File(...)) -> ApiResponse:
         asset = await asset_service.save_apk(apk)
@@ -138,7 +188,76 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         agent_provider: AgentProvider = Form(default=AgentProvider.manual),
         agent_goal: str | None = Form(default=None),
         flow_review_status: FlowReviewStatus = Form(default=FlowReviewStatus.draft),
+        flow_draft_id: str | None = Form(default=None),
     ) -> ApiResponse:
+        effective_package = package_name
+        flow = None
+        if sample_mode == "provided":
+            if flow_review_status != FlowReviewStatus.confirmed:
+                _raise_api_error(
+                    "FLOW_CONFIRMATION_REQUIRED",
+                    "sample_mode=provided requires flow_review_status=confirmed before creating a run.",
+                )
+
+            draft = None
+            if flow_draft_id:
+                draft = store.get_testcase_draft(flow_draft_id)
+                if not draft:
+                    _raise_api_error(
+                        "FLOW_DRAFT_NOT_FOUND",
+                        "Confirmed testcase flow draft was not found.",
+                        404,
+                    )
+                effective_package = effective_package or draft.package_name
+                if draft.privacy_status not in {PrivacyStatus.clean, PrivacyStatus.redacted}:
+                    _raise_api_error(
+                        "CASE_PRIVACY_BLOCKED",
+                        "Privacy status blocks this testcase flow draft from creating a run.",
+                    )
+                if (
+                    draft.status != TestcaseDraftStatus.confirmed
+                    or draft.flow_review_status != FlowReviewStatus.confirmed
+                ):
+                    _raise_api_error(
+                        "FLOW_DRAFT_NOT_CONFIRMED",
+                        "Testcase flow draft must be confirmed before creating a run.",
+                    )
+                if not draft.validation or not draft.validation.valid or not draft.sample_flow:
+                    _raise_api_error(
+                        "FLOW_DRAFT_NOT_CONFIRMED",
+                        "Confirmed testcase flow draft must include a valid SampleFlowDTO.",
+                    )
+
+            if flow_json:
+                flow_validation = _validate_flow_payload(
+                    FlowValidationRequest(
+                        flow_json=flow_json,
+                        platform=platform,
+                        package_name=effective_package,
+                    )
+                )
+                if not flow_validation.valid or not flow_validation.flow:
+                    _raise_api_error(
+                        "FLOW_JSON_INVALID",
+                        "flowJson must be a valid SampleFlowDTO JSON object.",
+                    )
+                flow = flow_validation.flow
+            elif draft and draft.sample_flow:
+                flow = draft.sample_flow
+            else:
+                _raise_api_error(
+                    "FLOW_PAYLOAD_MISSING",
+                    "sample_mode=provided requires flow_json or flow_draft_id.",
+                )
+
+            effective_package = effective_package or flow.package_name
+            if draft:
+                if not draft.confirmed_flow_hash or flow_hash(flow) != draft.confirmed_flow_hash:
+                    _raise_api_error(
+                        "FLOW_DRAFT_HASH_MISMATCH",
+                        "Submitted flow_json does not match the confirmed testcase flow draft.",
+                    )
+
         if platform == Platform.ios:
             capability = device_service.check_ios_capability()
             return ApiResponse(
@@ -151,24 +270,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
         asset = await asset_service.save_apk(apk)
-        effective_package = package_name or asset.package_name
-        flow = None
-        if sample_mode == "provided" and flow_json:
-            flow_validation = _validate_flow_payload(
-                FlowValidationRequest(
-                    flow_json=flow_json,
-                    platform=platform,
-                    package_name=effective_package,
-                )
-            )
-            if not flow_validation.valid or not flow_validation.flow:
-                raise HTTPException(
-                    status_code=400,
-                    detail="flowJson must be a valid SampleFlowDTO JSON object",
-                )
-            flow = flow_validation.flow
-            effective_package = effective_package or flow.package_name
-        else:
+        effective_package = effective_package or asset.package_name
+        if sample_mode != "provided":
             flow = sample_service.generate(
                 GenerateSampleRequest(
                     app_name=test_name,
@@ -186,6 +289,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             package_name=effective_package,
             apk_asset=asset,
             sample_flow=flow,
+            flow_draft_id=flow_draft_id,
             agent_provider=agent_provider,
             agent_goal=agent_goal,
             flow_review_status=flow_review_status,
@@ -268,90 +372,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 def _validate_flow_payload(request: FlowValidationRequest) -> FlowValidationResultDTO:
-    from .schemas import SampleFlowDTO
+    return validate_flow_payload(request)
 
-    errors: list[FlowValidationErrorDTO] = []
-    if request.flow_json is not None and request.flow is not None:
-        errors.append(
-            FlowValidationErrorDTO(
-                code="FLOW_PAYLOAD_AMBIGUOUS",
-                message="Provide either flowJson or flow, not both.",
-            )
-        )
-        return FlowValidationResultDTO(valid=False, errors=errors)
 
-    raw_payload = request.flow
-    if request.flow_json is not None:
-        try:
-            raw_payload = json.loads(request.flow_json)
-        except json.JSONDecodeError:
-            errors.append(
-                FlowValidationErrorDTO(
-                    code="FLOW_JSON_INVALID",
-                    field="flowJson",
-                    message="flowJson must be a JSON SampleFlowDTO object, not Maestro YAML or free text.",
-                )
-            )
-            return FlowValidationResultDTO(valid=False, errors=errors)
-
-    if raw_payload is None:
-        errors.append(
-            FlowValidationErrorDTO(
-                code="FLOW_PAYLOAD_MISSING",
-                message="Provide a SampleFlowDTO JSON object to validate.",
-            )
-        )
-        return FlowValidationResultDTO(valid=False, errors=errors)
-    if not isinstance(raw_payload, dict):
-        errors.append(
-            FlowValidationErrorDTO(
-                code="FLOW_PAYLOAD_NOT_OBJECT",
-                message="SampleFlowDTO must be a JSON object.",
-            )
-        )
-        return FlowValidationResultDTO(valid=False, errors=errors)
-
-    try:
-        flow = SampleFlowDTO.model_validate(raw_payload)
-    except ValidationError as exc:
-        return FlowValidationResultDTO(
-            valid=False,
-            errors=[
-                FlowValidationErrorDTO(
-                    code="FLOW_SCHEMA_INVALID",
-                    field=".".join(str(part) for part in error["loc"]) or None,
-                    message=str(error["msg"]),
-                )
-                for error in exc.errors()
-            ],
-        )
-
-    if request.platform and flow.platform != request.platform:
-        errors.append(
-            FlowValidationErrorDTO(
-                code="FLOW_PLATFORM_MISMATCH",
-                field="platform",
-                message="Flow platform must match the selected run platform.",
-            )
-        )
-    if request.package_name and flow.package_name != request.package_name:
-        errors.append(
-            FlowValidationErrorDTO(
-                code="FLOW_PACKAGE_NAME_MISMATCH",
-                field="package_name",
-                message="Flow packageName must match the uploaded app packageName.",
-            )
-        )
-    if not flow.steps:
-        errors.append(
-            FlowValidationErrorDTO(
-                code="FLOW_STEPS_EMPTY",
-                field="steps",
-                message="Flow must contain at least one controlled action.",
-            )
-        )
-
-    return FlowValidationResultDTO(valid=not errors, flow=None if errors else flow, errors=errors)
+def _raise_api_error(code: str, message: str, status_code: int = 400) -> None:
+    raise HTTPException(status_code=status_code, detail={"code": code, "message": message})
 
 
 app = create_app()
