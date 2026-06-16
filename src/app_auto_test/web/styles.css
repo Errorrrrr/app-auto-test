@@ -206,6 +206,11 @@ button:disabled {
   line-height: 1.45;
 }
 
+.testcase-upload {
+  display: grid;
+  gap: 10px;
+}
+
 .flow-editor,
 .prompt-editor {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -455,6 +460,22 @@ button:disabled {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.preview-block {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--text);
+  padding: 10px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 

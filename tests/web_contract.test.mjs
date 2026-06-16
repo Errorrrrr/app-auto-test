@@ -1,0 +1,166 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import vm from "node:vm";
+
+function createElement(tagName = "div") {
+  return {
+    tagName,
+    children: [],
+    className: "",
+    textContent: "",
+    disabled: false,
+    firstChild: null,
+    classList: {
+      add() {},
+      remove() {},
+    },
+    append(...items) {
+      this.children.push(...items);
+      this.firstChild = this.children[0] || null;
+    },
+    removeChild(child) {
+      this.children = this.children.filter((item) => item !== child);
+      this.firstChild = this.children[0] || null;
+    },
+  };
+}
+
+function loadApp() {
+  class FakeFormData {
+    constructor() {
+      this.fields = [];
+    }
+
+    append(name, value) {
+      this.fields.push([name, value]);
+    }
+
+    get(name) {
+      return this.fields.find(([field]) => field === name)?.[1] ?? null;
+    }
+  }
+
+  const context = {
+    console,
+    document: {
+      addEventListener() {},
+      createElement,
+      getElementById: () => createElement(),
+      querySelector: (selector) => {
+        if (selector === "input[name='runMode']:checked") {
+          return { value: "execute" };
+        }
+        if (selector === "input[name='agentProvider']:checked") {
+          return { value: "codex" };
+        }
+        return { value: "android" };
+      },
+      querySelectorAll: () => [],
+    },
+    fetch: async () => {
+      throw new Error("fetch stub was not configured");
+    },
+    FormData: FakeFormData,
+    localStorage: {
+      getItem: () => null,
+      setItem() {},
+    },
+    window: {
+      clearTimeout() {},
+      location: { assign() {} },
+      setTimeout: () => 1,
+    },
+  };
+  vm.createContext(context);
+  const source = readFileSync(new URL("../src/app_auto_test/web/app.js", import.meta.url), "utf8");
+  vm.runInContext(
+    `${source}\nglobalThis.__hooks = { api, createRun, nodes, normalizeTestcaseDraft, renderTestcaseDraft, state };`,
+    context,
+  );
+  return { context, hooks: context.__hooks };
+}
+
+test("api exposes backend 400 detail code and message", async () => {
+  const { context, hooks } = loadApp();
+  context.fetch = async () => ({
+    ok: false,
+    status: 400,
+    headers: { get: () => "application/json" },
+    json: async () => ({
+      detail: {
+        code: "CASE_FILE_YAML_UNSUPPORTED",
+        message: "YAML files are not supported.",
+      },
+    }),
+  });
+
+  await assert.rejects(hooks.api("/api/v1/testcase-files"), (error) => {
+    assert.equal(error.status, 400);
+    assert.equal(error.code, "CASE_FILE_YAML_UNSUPPORTED");
+    assert.equal(error.message, "YAML files are not supported.");
+    return true;
+  });
+});
+
+test("testcase failure panel renders real 400 error code", () => {
+  const { hooks } = loadApp();
+  hooks.nodes.testcaseFile = { files: [{ name: "flow.yaml" }] };
+  hooks.nodes.testcasePanel = createElement();
+  hooks.nodes.testcaseStatus = createElement();
+
+  const error = new Error("YAML files are not supported.");
+  error.code = "CASE_FILE_YAML_UNSUPPORTED";
+  hooks.renderTestcaseDraft(error);
+
+  assert.equal(hooks.nodes.testcaseStatus.textContent, "上传失败");
+  assert.equal(hooks.nodes.testcaseStatus.className, "meta blocked");
+  assert.match(hooks.nodes.testcasePanel.textContent, /不支持直接上传 YAML/);
+  assert.match(hooks.nodes.testcasePanel.textContent, /YAML files are not supported/);
+});
+
+test("privacy findings accept backend type field", () => {
+  const { hooks } = loadApp();
+  const draft = hooks.normalizeTestcaseDraft({
+    privacy_findings: [{ type: "email", count: "2", severity: "warning" }],
+  });
+
+  assert.equal(draft.privacy_findings[0].kind, "email");
+  assert.equal(draft.privacy_findings[0].type, "email");
+  assert.equal(draft.privacy_findings[0].count, 2);
+});
+
+test("create run sends confirmed draft review fields", async () => {
+  const { context, hooks } = loadApp();
+  let capturedBody = null;
+  context.fetch = async (_path, options) => {
+    capturedBody = options.body;
+    throw new Error("stop after capture");
+  };
+  hooks.nodes.apkFile = { files: [{ name: "app.apk" }] };
+  hooks.nodes.testName = { value: "confirmed draft run" };
+  hooks.nodes.deviceSelect = { value: "emulator-5554" };
+  hooks.nodes.packageName = { value: "com.example.app" };
+  hooks.nodes.flowEditor = {
+    value: JSON.stringify({
+      name: "login flow",
+      steps: [{ action: "launchApp" }],
+    }),
+  };
+  hooks.nodes.createButton = createElement("button");
+  hooks.nodes.toast = createElement();
+  hooks.state.flowConfirmed = true;
+  hooks.state.testcaseDraft = {
+    draft_id: "draft-123",
+    flow_review_status: "confirmed",
+    confirmed_flow_hash: "sha256:abc",
+    privacy_status: "redacted",
+  };
+
+  await hooks.createRun({ preventDefault() {} });
+
+  assert.equal(capturedBody.get("sample_mode"), "provided");
+  assert.equal(capturedBody.get("flow_review_status"), "confirmed");
+  assert.equal(capturedBody.get("flow_draft_id"), "draft-123");
+  assert.match(capturedBody.get("flow_json"), /login flow/);
+});

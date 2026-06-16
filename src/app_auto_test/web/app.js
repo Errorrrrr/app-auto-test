@@ -35,6 +35,17 @@ const STATUS_LABELS = {
   failed: "失败",
   blocked: "已阻断",
   cancelled: "已取消",
+  uploaded: "已上传",
+  extracting: "抽取中",
+  extract_failed: "抽取失败",
+  privacy_scanning: "隐私扫描中",
+  privacy_blocked: "隐私阻断",
+  privacy_failed: "隐私扫描失败",
+  parsed: "已解析",
+  validation_failed: "校验失败",
+  validated: "校验通过",
+  confirmed: "已确认",
+  rejected: "已退回",
   pending: "待生成",
   generated: "已生成",
   online: "在线",
@@ -94,6 +105,21 @@ const REASON_LABELS = {
   IOS_BUNDLE_ID_MISSING: "缺少 iOS bundleId",
   IOS_SIGNING_MISSING: "缺少 iOS 签名资料",
   IOS_EXECUTION_BLOCKED: "iOS 真实执行已阻断",
+  CASE_FILE_UNSUPPORTED_TYPE: "不支持的用例文件格式",
+  CASE_FILE_LEGACY_DOC_UNSUPPORTED: "不支持 legacy .doc 文件",
+  CASE_FILE_YAML_UNSUPPORTED: "不支持直接上传 YAML",
+  CASE_FILE_TOO_LARGE: "用例文件超出大小限制",
+  CASE_TEXT_TOO_LARGE: "抽取文本超出大小限制",
+  CASE_FILE_EMPTY: "用例文件为空",
+  CASE_FILE_DECODE_FAILED: "用例文本无法解码",
+  CASE_FILE_DOCX_ENCRYPTED: "DOCX 无法读取或受保护",
+  CASE_PRIVACY_BLOCKED: "用例文件命中隐私阻断",
+  CASE_PRIVACY_SCAN_FAILED: "隐私扫描失败",
+  CASE_DRAFT_VALIDATION_FAILED: "用例草稿校验失败",
+  FLOW_CONFIRMATION_REQUIRED: "用例需要确认",
+  FLOW_DRAFT_NOT_FOUND: "用例草稿不存在",
+  FLOW_DRAFT_NOT_CONFIRMED: "用例草稿未确认",
+  FLOW_DRAFT_HASH_MISMATCH: "用例草稿已变更，需要重新确认",
 };
 
 const NEXT_ACTION_LABELS = {
@@ -108,6 +134,28 @@ const NEXT_ACTION_LABELS = {
   "Upload APK and provide packageName.": "上传 APK 并填写 packageName。",
   "Select an online Android device and configure adb before execution.": "执行前选择在线 Android 设备并配置 adb。",
   "Provide IPA, bundleId, signing method and a target iOS device or simulator before real iOS execution.": "真实 iOS 执行前补齐 IPA、bundleId、签名方式和目标设备/模拟器。",
+};
+
+const PRIVACY_LABELS = {
+  unscanned: "未扫描",
+  clean: "无需脱敏",
+  redacted: "已脱敏",
+  blocked: "已阻断",
+  failed: "扫描失败",
+};
+
+const PRIVACY_FINDING_LABELS = {
+  email: "邮箱",
+  phone: "手机号",
+  id_card: "身份证号",
+  authorization: "Authorization",
+  api_key: "API Key",
+  token: "Token",
+  password: "密码",
+  secret: "Secret",
+  cookie: "Cookie",
+  verification_code: "验证码",
+  private_key: "私钥",
 };
 
 const EVENT_LABELS = {
@@ -164,6 +212,7 @@ const state = {
   toolManifest: null,
   flowValidation: null,
   flowConfirmed: false,
+  testcaseDraft: null,
 };
 
 const nodes = {};
@@ -193,6 +242,11 @@ function bindNodes() {
     "agentPrompt",
     "copyPromptButton",
     "refreshManifestButton",
+    "testcaseFile",
+    "uploadTestcaseButton",
+    "rejectTestcaseButton",
+    "testcaseStatus",
+    "testcasePanel",
     "flowEditor",
     "flowJsonStatus",
     "validateFlowButton",
@@ -237,6 +291,9 @@ function bindEvents() {
   nodes.flowEditor.addEventListener("input", markFlowDirty);
   nodes.validateFlowButton.addEventListener("click", () => validateFlow());
   nodes.confirmFlowButton.addEventListener("click", confirmFlow);
+  nodes.uploadTestcaseButton.addEventListener("click", uploadTestcaseFile);
+  nodes.rejectTestcaseButton.addEventListener("click", rejectTestcaseDraft);
+  nodes.testcaseFile.addEventListener("change", handleTestcaseFileChange);
   nodes.copyPromptButton.addEventListener("click", copyPrompt);
   nodes.refreshManifestButton.addEventListener("click", loadToolManifest);
   document.querySelectorAll("input[name='platform']").forEach((input) => {
@@ -516,6 +573,167 @@ function renderCapability(capability) {
   }
 }
 
+function handleTestcaseFileChange() {
+  state.testcaseDraft = null;
+  state.flowConfirmed = false;
+  renderTestcaseDraft();
+  renderValidation();
+}
+
+async function uploadTestcaseFile() {
+  const file = nodes.testcaseFile.files[0];
+  if (!file) {
+    showToast("请选择 txt、md 或 docx 测试用例文件。");
+    return;
+  }
+
+  const form = new FormData();
+  form.append("file", file);
+  form.append("platform", getSelectedPlatform());
+  form.append("package_name", nodes.packageName.value.trim());
+
+  setBusy(nodes.uploadTestcaseButton, true, "上传中");
+  nodes.testcaseStatus.textContent = "上传中";
+  nodes.testcaseStatus.className = "meta warning";
+  try {
+    const response = await api("/api/v1/testcase-files", {
+      method: "POST",
+      body: form,
+    });
+    if (!response.success) {
+      state.testcaseDraft = null;
+      renderTestcaseDraft(response.error);
+      showToast(translateReason(response.error?.code) || response.error?.message || "用例文件上传失败。");
+      return;
+    }
+    applyTestcaseDraft(response.data);
+    showToast("测试用例文件已生成草稿，请预览并确认。");
+  } catch (error) {
+    state.testcaseDraft = null;
+    renderTestcaseDraft(error);
+    showToast(translateReason(error.code) || error.message || "用例文件上传失败。");
+  } finally {
+    setBusy(nodes.uploadTestcaseButton, false, "上传解析");
+  }
+}
+
+async function rejectTestcaseDraft() {
+  if (!state.testcaseDraft || !state.testcaseDraft.draft_id) {
+    state.testcaseDraft = null;
+    state.flowConfirmed = false;
+    renderTestcaseDraft();
+    renderValidation();
+    return;
+  }
+  setBusy(nodes.rejectTestcaseButton, true, "退回中");
+  try {
+    const response = await api(`/api/v1/testcase-files/${encodeURIComponent(state.testcaseDraft.draft_id)}/reject`, {
+      method: "POST",
+    });
+    applyTestcaseDraft(response.data, { keepEditor: true });
+    state.flowConfirmed = false;
+    showToast("用例草稿已退回，可重新上传。");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(nodes.rejectTestcaseButton, false, "退回草稿");
+  }
+}
+
+function applyTestcaseDraft(draft, options = {}) {
+  state.testcaseDraft = normalizeTestcaseDraft(draft);
+  state.flowConfirmed = state.testcaseDraft.flow_review_status === "confirmed";
+  state.flowValidation = state.testcaseDraft.validation ? normalizeValidationResponse(state.testcaseDraft.validation) : null;
+  if (state.flowValidation) {
+    state.flowValidation.source = "server";
+  }
+  if (state.testcaseDraft.sample_flow && !options.keepEditor) {
+    nodes.flowEditor.value = JSON.stringify(state.testcaseDraft.sample_flow, null, 2);
+  } else if (!state.testcaseDraft.sample_flow && !options.keepEditor) {
+    nodes.flowEditor.value = "";
+  }
+  nodes.sampleStatus.textContent = state.testcaseDraft.flow_review_status === "confirmed" ? "文件用例已确认" : "文件用例待确认";
+  renderTestcaseDraft();
+  renderValidation();
+}
+
+function normalizeTestcaseDraft(draft) {
+  const safeDraft = draft || {};
+  return {
+    ...safeDraft,
+    privacy_findings: (safeDraft.privacy_findings || []).map((finding) => ({
+      kind: finding.kind || finding.type || "unknown",
+      type: finding.type || finding.kind || "unknown",
+      count: Number(finding.count || 0),
+      severity: finding.severity || "warning",
+    })),
+    warnings: safeDraft.warnings || [],
+    unmapped_fragments: safeDraft.unmapped_fragments || [],
+  };
+}
+
+function renderTestcaseDraft(error) {
+  if (!nodes.testcasePanel) {
+    return;
+  }
+  clear(nodes.testcasePanel);
+  const selectedFile = nodes.testcaseFile.files[0];
+  if (error) {
+    nodes.testcaseStatus.textContent = "上传失败";
+    nodes.testcaseStatus.className = "meta blocked";
+    nodes.testcasePanel.className = "empty-state";
+    nodes.testcasePanel.textContent = `${translateReason(error.code) || "上传失败"}：${error.message || "请检查文件后重试。"}`;
+    return;
+  }
+  if (!state.testcaseDraft) {
+    nodes.testcaseStatus.textContent = selectedFile ? selectedFile.name : "未上传";
+    nodes.testcaseStatus.className = "meta";
+    nodes.testcasePanel.className = "empty-state";
+    nodes.testcasePanel.textContent = "支持 txt、md、docx 测试用例文件。解析后只展示脱敏预览、命中类型和数量。";
+    return;
+  }
+
+  const draft = state.testcaseDraft;
+  nodes.testcaseStatus.textContent = translateStatus(draft.status);
+  nodes.testcaseStatus.className = `meta ${statusClass(draft.status)}`;
+  nodes.testcasePanel.className = "validation-panel";
+
+  const title = document.createElement("div");
+  title.className = "title-line";
+  title.append(textSpan(draft.asset?.file_name || draft.draft_id));
+  title.append(tag(translateStatus(draft.status), statusClass(draft.status)));
+  title.append(tag(translatePrivacyStatus(draft.privacy_status), privacyStatusClass(draft.privacy_status)));
+  nodes.testcasePanel.append(title);
+
+  const detail = document.createElement("div");
+  detail.className = "details";
+  detail.textContent = [draft.draft_id, draft.asset ? `${Math.ceil(draft.asset.size_bytes / 1024)} KB` : "", draft.package_name || ""]
+    .filter(Boolean)
+    .join(" | ");
+  nodes.testcasePanel.append(detail);
+
+  if (draft.redacted_preview) {
+    const preview = document.createElement("pre");
+    preview.className = "preview-block";
+    preview.textContent = draft.redacted_preview;
+    nodes.testcasePanel.append(preview);
+  }
+  if (draft.privacy_findings.length) {
+    nodes.testcasePanel.append(
+      listCard(
+        "隐私命中",
+        draft.privacy_findings.map((finding) => `${translatePrivacyFinding(finding.kind)}：${finding.count} 处`),
+      ),
+    );
+  }
+  if (draft.warnings.length) {
+    nodes.testcasePanel.append(listCard("提示", draft.warnings));
+  }
+  if (draft.unmapped_fragments.length) {
+    nodes.testcasePanel.append(listCard("未映射片段", draft.unmapped_fragments));
+  }
+}
+
 async function generateSample() {
   setBusy(nodes.generateButton, true, "生成中");
   try {
@@ -531,11 +749,13 @@ async function generateSample() {
       body: JSON.stringify(payload),
     });
     state.sample = response.data;
+    state.testcaseDraft = null;
     state.flowValidation = null;
     state.flowConfirmed = false;
     nodes.flowEditor.value = JSON.stringify(state.sample, null, 2);
     nodes.sampleStatus.textContent = "样例已生成";
     nodes.flowJsonStatus.textContent = "待校验";
+    renderTestcaseDraft();
     renderValidation();
     showToast("SampleFlowDTO 样例已生成，请校验并确认。");
   } catch (error) {
@@ -571,7 +791,7 @@ async function validateFlow(options = {}) {
       const response = await api("/api/v1/flows/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(flow),
+        body: JSON.stringify(buildFlowValidationRequest(flow)),
       });
       result = normalizeValidationResponse(response.data);
       result.source = "server";
@@ -601,14 +821,49 @@ async function validateFlow(options = {}) {
 }
 
 async function confirmFlow() {
+  const flow = readFlowPayload({ quiet: true });
+  if (flow === false || !flow) {
+    showToast("请先生成、上传或粘贴 SampleFlowDTO JSON。");
+    return;
+  }
   const result = state.flowValidation && state.flowValidation.valid ? state.flowValidation : await validateFlow({ quiet: true });
   if (!result || !result.valid) {
     showToast("校验通过后才能确认用例。");
     return;
   }
+  if (state.testcaseDraft && state.testcaseDraft.draft_id) {
+    setBusy(nodes.confirmFlowButton, true, "确认中");
+    try {
+      const response = await api(`/api/v1/testcase-files/${encodeURIComponent(state.testcaseDraft.draft_id)}/confirm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildFlowValidationRequest(flow)),
+      });
+      applyTestcaseDraft(response.data, { keepEditor: true });
+      if (!response.success || state.testcaseDraft.flow_review_status !== "confirmed") {
+        showToast(response.error ? translateReason(response.error.code) || response.error.message : "用例草稿未确认，请检查错误。");
+        return;
+      }
+      showToast("用例草稿已由后端确认，创建运行会提交 draft id。");
+      return;
+    } catch (error) {
+      showToast(error.message);
+      return;
+    } finally {
+      setBusy(nodes.confirmFlowButton, false, "确认用例");
+    }
+  }
   state.flowConfirmed = true;
   renderValidation();
   showToast("用例已确认，创建运行时会提交该 JSON。");
+}
+
+function buildFlowValidationRequest(flow) {
+  return {
+    flow,
+    platform: getSelectedPlatform(),
+    package_name: nodes.packageName.value.trim() || null,
+  };
 }
 
 function localValidateFlow(flow) {
@@ -684,19 +939,26 @@ function localValidateFlow(flow) {
 
 function normalizeValidationResponse(data) {
   if (!data) {
-    return {
-      valid: true,
-      errors: [],
-      warnings: [],
-      summary: "后端校验通过。",
-    };
+    return null;
   }
   return {
     valid: Boolean(data.valid ?? data.ready ?? true),
-    errors: data.errors || data.flow_validation_errors || [],
-    warnings: data.warnings || [],
+    errors: normalizeMessages(data.errors || data.flow_validation_errors || []),
+    warnings: normalizeMessages(data.warnings || []),
     summary: data.summary || data.message || "后端校验完成。",
   };
+}
+
+function normalizeMessages(items) {
+  return (items || []).map((item) => {
+    if (typeof item === "string") {
+      return item;
+    }
+    if (item && typeof item === "object") {
+      return [item.code, item.field, item.message].filter(Boolean).join(" | ");
+    }
+    return String(item);
+  });
 }
 
 function renderValidation() {
@@ -705,7 +967,10 @@ function renderValidation() {
   const result = state.flowValidation;
   if (!result) {
     nodes.validationPanel.className = "empty-state";
-    nodes.validationPanel.textContent = "只接受 SampleFlowDTO JSON，不接受直接 Maestro YAML。校验通过并确认后才能作为用例提交。";
+    nodes.validationPanel.textContent =
+      state.testcaseDraft && state.testcaseDraft.privacy_status === "blocked"
+        ? "测试用例文件命中阻断级隐私内容，不能确认或创建运行。"
+        : "只接受 SampleFlowDTO JSON，不接受直接 Maestro YAML。校验通过并确认后才能作为用例提交。";
     nodes.confirmFlowButton.disabled = true;
     nodes.flowJsonStatus.textContent = nodes.flowEditor.value.trim() ? "待校验" : "待生成或导入";
     nodes.flowJsonStatus.className = "meta";
@@ -729,7 +994,7 @@ function renderValidation() {
   if (result.warnings.length) {
     nodes.validationPanel.append(listCard("提示", result.warnings));
   }
-  nodes.confirmFlowButton.disabled = !result.valid;
+  nodes.confirmFlowButton.disabled = !result.valid || (state.testcaseDraft && state.testcaseDraft.privacy_status === "blocked");
   nodes.flowJsonStatus.textContent = state.flowConfirmed ? "已确认" : result.valid ? "校验通过，待确认" : "校验未通过";
   nodes.flowJsonStatus.className = `meta ${state.flowConfirmed ? "ready" : result.valid ? "warning" : "blocked"}`;
 }
@@ -737,6 +1002,15 @@ function renderValidation() {
 function markFlowDirty() {
   state.flowValidation = null;
   state.flowConfirmed = false;
+  if (state.testcaseDraft && state.testcaseDraft.flow_review_status === "confirmed") {
+    state.testcaseDraft = {
+      ...state.testcaseDraft,
+      status: "validated",
+      flow_review_status: "draft",
+      confirmed_flow_hash: null,
+    };
+    renderTestcaseDraft();
+  }
   renderValidation();
 }
 
@@ -766,6 +1040,10 @@ async function createRun(event) {
     return;
   }
   if (flow) {
+    if (state.testcaseDraft && state.testcaseDraft.privacy_status === "blocked") {
+      showToast("测试用例文件命中隐私阻断，不能创建运行。");
+      return;
+    }
     if (!state.flowConfirmed) {
       const result = await validateFlow({ quiet: true });
       if (!result || !result.valid) {
@@ -777,6 +1055,14 @@ async function createRun(event) {
     }
     form.append("sample_mode", "provided");
     form.append("flow_json", JSON.stringify(flow));
+    form.append("flow_review_status", "confirmed");
+    if (state.testcaseDraft && state.testcaseDraft.draft_id) {
+      if (state.testcaseDraft.flow_review_status !== "confirmed" || !state.testcaseDraft.confirmed_flow_hash) {
+        showToast("用例草稿已变更，请重新确认后再创建运行。");
+        return;
+      }
+      form.append("flow_draft_id", state.testcaseDraft.draft_id);
+    }
   } else {
     form.append("sample_mode", "auto");
   }
@@ -1003,9 +1289,17 @@ async function api(path, options = {}) {
   const contentType = response.headers.get("content-type") || "";
   const body = contentType.includes("application/json") ? await response.json() : await response.text();
   if (!response.ok) {
-    const message = typeof body === "string" ? body : body.detail || body.error?.message || "请求失败";
+    const detail = typeof body === "string" ? body : body.detail;
+    const detailObject = isPlainObject(detail) ? detail : {};
+    const code = detailObject.code || body.error?.code || (typeof detail === "string" && /^[A-Z0-9_]+$/.test(detail) ? detail : undefined);
+    const message =
+      detailObject.message ||
+      body.error?.message ||
+      (typeof detail === "string" ? detail : undefined) ||
+      "请求失败";
     const error = new Error(message);
     error.status = response.status;
+    error.code = code;
     throw error;
   }
   return body;
@@ -1078,13 +1372,17 @@ function statusClass(value) {
   if (!value) {
     return "";
   }
-  if (["passed", "generated", "online", "ready"].includes(value)) {
+  if (["passed", "generated", "online", "ready", "validated", "confirmed", "clean", "redacted"].includes(value)) {
     return "ready";
   }
-  if (["blocked", "failed", "unavailable", "offline", "cancelled"].includes(value)) {
+  if (["blocked", "failed", "unavailable", "offline", "cancelled", "privacy_blocked", "privacy_failed", "extract_failed", "validation_failed", "rejected"].includes(value)) {
     return "blocked";
   }
   return "warning";
+}
+
+function privacyStatusClass(value) {
+  return statusClass(value);
 }
 
 function translatePlatform(value) {
@@ -1097,6 +1395,14 @@ function translateRunMode(value) {
 
 function translateStatus(value) {
   return STATUS_LABELS[value] || value || "-";
+}
+
+function translatePrivacyStatus(value) {
+  return PRIVACY_LABELS[value] || translateStatus(value);
+}
+
+function translatePrivacyFinding(value) {
+  return PRIVACY_FINDING_LABELS[value] || value || "-";
 }
 
 function translateDeviceKind(value) {

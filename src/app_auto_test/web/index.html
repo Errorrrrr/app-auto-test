@@ -130,6 +130,18 @@
           <h3>SampleFlowDTO JSON</h3>
           <span id="flowJsonStatus" class="meta">待生成或导入</span>
         </div>
+        <div class="testcase-upload">
+          <label class="field">
+            <span>上传测试用例文件</span>
+            <input id="testcaseFile" name="testcase_file" type="file" accept=".txt,.text,.md,.markdown,.docx" />
+          </label>
+          <div class="button-row">
+            <button class="button secondary" id="uploadTestcaseButton" type="button">上传解析</button>
+            <button class="button ghost" id="rejectTestcaseButton" type="button">退回草稿</button>
+            <span id="testcaseStatus" class="meta">未上传</span>
+          </div>
+          <div id="testcasePanel" class="empty-state">支持 txt、md、docx 测试用例文件。解析后只展示脱敏预览、命中类型和数量。</div>
+        </div>
         <textarea id="flowEditor" class="flow-editor" rows="13" spellcheck="false"></textarea>
         <div class="button-row">
           <button class="button secondary" id="validateFlowButton" type="button">校验 JSON</button>
