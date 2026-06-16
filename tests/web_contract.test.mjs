@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+
+const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
 function createElement(tagName = "div") {
   return {
@@ -93,6 +97,36 @@ function loadApp() {
   return { context, hooks: context.__hooks };
 }
 
+function fetchIosCapabilityFromApi() {
+  const code = `
+import json
+import tempfile
+from pathlib import Path
+from fastapi.testclient import TestClient
+from app_auto_test.config import Settings
+from app_auto_test.main import create_app
+
+with tempfile.TemporaryDirectory() as data_dir:
+    app = create_app(Settings(data_dir=Path(data_dir)))
+    client = TestClient(app)
+    response = client.post("/api/v1/capabilities/check", data={"platform": "ios"})
+    response.raise_for_status()
+    print(json.dumps(response.json()["data"]))
+`;
+  const result = spawnSync("python3", ["-c", code], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PYTHONPATH: ["src", process.env.PYTHONPATH].filter(Boolean).join(":"),
+    },
+  });
+  if (result.status !== 0) {
+    throw new Error(`Failed to fetch iOS capability API response: ${result.stderr || result.stdout}`);
+  }
+  return JSON.parse(result.stdout);
+}
+
 test("api exposes backend 400 detail code and message", async () => {
   const { context, hooks } = loadApp();
   context.fetch = async () => ({
@@ -182,28 +216,14 @@ test("iOS capability renders readiness blocked checklist", () => {
   hooks.nodes.capabilityReady = createElement();
   hooks.nodes.capabilityPanel = createElement();
 
-  hooks.renderCapability({
-    platform: "ios",
-    ready: false,
-    checks: {
-      iosArtifactProvided: false,
-      bundleIdProvided: false,
-      signingReady: false,
-      deviceAvailable: false,
-      runnerConfigured: false,
-    },
-    missing_fields: ["ipa", "bundleId", "signingProfile", "targetDevice", "runnerType"],
-    blocked_reasons: [
-      "IOS_ARTIFACT_MISSING",
-      "IOS_BUNDLE_ID_MISSING",
-      "IOS_SIGNING_MISSING",
-      "IOS_DEVICE_MISSING",
-      "IOS_RUNNER_MISSING",
-    ],
-    next_actions: [
-      "Provide IPA, bundleId, signing method and a target iOS device or simulator before real iOS execution.",
-    ],
-  });
+  const capability = fetchIosCapabilityFromApi();
+  assert.equal(capability.platform, "ios");
+  assert.equal(capability.ready, false);
+  assert.deepEqual(capability.missing_fields, ["ipa", "bundleId", "signingProfile", "targetDevice"]);
+  assert.equal(Object.hasOwn(capability.checks, "runnerConfigured"), false);
+  assert.equal(capability.blocked_reasons.includes("IOS_RUNNER_MISSING"), false);
+
+  hooks.renderCapability(capability);
 
   const text = collectText(hooks.nodes.capabilityPanel);
   assert.match(text, /iOS readiness blocked 清单/);
