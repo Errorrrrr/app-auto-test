@@ -14,6 +14,7 @@ The first stage is a Codex-only + Android local runner skeleton:
 - write append-only run events
 - generate reports that can be viewed in the tool or exported as HTML/JSON
 - keep iOS in capability-check/blocked mode until signing inputs are supplied
+- expose pre-real provider readiness for execution, device, artifact and model boundaries
 
 ## Quick Start
 
@@ -36,6 +37,7 @@ report viewing and HTML/JSON export.
 - `GET /api/v1/health`
 - `GET /api/v1/devices?platform=android`
 - `GET /api/v1/tools/manifest`
+- `GET /api/v1/providers/readiness`
 - `POST /api/v1/samples/generate`
 - `POST /api/v1/flows/validate`
 - `POST /api/v1/testcase-files`
@@ -71,6 +73,14 @@ Environment variables:
 
 By default, real execution is disabled. The runner still performs capability checks and writes a blocked report with the exact missing inputs. This keeps the API safe while the frontend and tool contracts are integrated.
 
+Provider readiness is intentionally pre-real:
+
+- execution is local Maestro behind `APP_AUTO_TEST_ALLOW_REAL_EXECUTION`
+- Android checks validate adb/Maestro command availability, deviceId, APK path, packageName and the real-execution gate before any run
+- artifact storage uses the local filesystem and records sha256/local URI metadata; real OSS/CDN is not configured
+- model analysis uses a no-op provider and never calls an external model
+- iOS remains readiness/blocked only until IPA, bundleId, signing and target device inputs are supplied
+
 When real Android execution is enabled and all capability checks pass, the
 runner writes:
 
@@ -85,7 +95,7 @@ generated report payload.
 ## Development
 
 ```bash
-pytest
+scripts/local-gate.sh
 ```
 
 The test suite uses temporary data directories and does not require a connected Android device.
