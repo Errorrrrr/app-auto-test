@@ -86,6 +86,7 @@ const CHECK_LABELS = {
   bundleIdProvided: "已填写 bundleId",
   signingReady: "签名资料就绪",
   deviceAvailable: "iOS 目标设备可用",
+  runnerConfigured: "Runner 路线已确认",
 };
 
 const REASON_LABELS = {
@@ -104,6 +105,8 @@ const REASON_LABELS = {
   IOS_ARTIFACT_MISSING: "缺少 iOS IPA 产物",
   IOS_BUNDLE_ID_MISSING: "缺少 iOS bundleId",
   IOS_SIGNING_MISSING: "缺少 iOS 签名资料",
+  IOS_DEVICE_MISSING: "缺少 iOS 目标设备",
+  IOS_RUNNER_MISSING: "缺少 iOS Runner 路线",
   IOS_EXECUTION_BLOCKED: "iOS 真实执行已阻断",
   CASE_FILE_UNSUPPORTED_TYPE: "不支持的用例文件格式",
   CASE_FILE_LEGACY_DOC_UNSUPPORTED: "不支持 legacy .doc 文件",
@@ -193,7 +196,51 @@ const FIELD_LABELS = {
   bundleId: "bundleId",
   signingProfile: "签名配置",
   targetDevice: "目标设备",
+  runnerType: "Runner 路线",
 };
+
+const IOS_READINESS_ITEMS = [
+  {
+    label: "IPA",
+    field: "ipa",
+    check: "iosArtifactProvided",
+    reason: "IOS_ARTIFACT_MISSING",
+    blockedText: "缺少可用于测试或重签的 IPA 产物。",
+    nextAction: "补齐 IPA 或构建产物获取方式。",
+  },
+  {
+    label: "bundleId",
+    field: "bundleId",
+    check: "bundleIdProvided",
+    reason: "IOS_BUNDLE_ID_MISSING",
+    blockedText: "缺少待测 App 的 bundleId。",
+    nextAction: "确认 bundleId，并与 IPA 产物保持一致。",
+  },
+  {
+    label: "签名配置",
+    field: "signingProfile",
+    check: "signingReady",
+    reason: "IOS_SIGNING_MISSING",
+    blockedText: "缺少签名方式、证书或描述文件责任路径。",
+    nextAction: "补齐签名/重签方式、证书、描述文件和 UDID 覆盖口径。",
+  },
+  {
+    label: "目标设备",
+    field: "targetDevice",
+    check: "deviceAvailable",
+    reason: "IOS_DEVICE_MISSING",
+    blockedText: "缺少可执行的 iOS 目标设备、模拟器或云真机来源。",
+    nextAction: "确认设备来源、系统版本、并发和租约释放规则。",
+  },
+  {
+    label: "Runner 路线",
+    field: "runnerType",
+    check: "runnerConfigured",
+    reason: "IOS_RUNNER_MISSING",
+    blockedText: "缺少 WDA、Appium、Maestro 或云真机重签执行路线。",
+    nextAction: "确认 Runner 类型、宿主环境和失败证据采集方式。",
+  },
+];
 
 const FALLBACK_MANIFEST = {
   allowed_tools: Object.keys(ACTION_LABELS),
@@ -561,6 +608,10 @@ function renderCapability(capability) {
   }
   if (capability.next_actions && capability.next_actions.length) {
     nodes.capabilityPanel.append(listCard("下一步", capability.next_actions.map(translateNextAction)));
+  }
+  const iosReadinessCard = renderIosReadinessChecklist(capability);
+  if (iosReadinessCard) {
+    nodes.capabilityPanel.append(iosReadinessCard);
   }
   if (capability.platform === "ios") {
     nodes.capabilityPanel.append(
@@ -1262,6 +1313,10 @@ function renderReport(payload) {
   if (payload.report.next_actions && payload.report.next_actions.length) {
     nodes.reportView.append(listCard("下一步", payload.report.next_actions.map(translateNextAction)));
   }
+  const iosReadinessCard = renderIosReadinessChecklist(findIosReadiness(payload));
+  if (iosReadinessCard) {
+    nodes.reportView.append(iosReadinessCard);
+  }
 }
 
 function exportReport(format) {
@@ -1366,6 +1421,151 @@ function listCard(title, items) {
 
 function infoCard(title, lines) {
   return listCard(title, lines);
+}
+
+function renderIosReadinessChecklist(source) {
+  const readiness = normalizeIosReadiness(source);
+  if (!readiness) {
+    return null;
+  }
+  const items = IOS_READINESS_ITEMS.map((item) => {
+    const hasCheck = Object.prototype.hasOwnProperty.call(readiness.checks, item.check);
+    const fieldMissing = readiness.missingFields.includes(item.field);
+    const reasonHit = readiness.blockedReasons.includes(item.reason);
+    const ready = hasCheck ? Boolean(readiness.checks[item.check]) : Boolean(readiness.ready && !fieldMissing && !reasonHit);
+    return {
+      ...item,
+      ready,
+      reasonHit,
+      fieldMissing,
+    };
+  });
+
+  const blockedCount = items.filter((item) => !item.ready).length;
+  const card = document.createElement("div");
+  card.className = "capability-card readiness-card";
+
+  const heading = document.createElement("div");
+  heading.className = "title-line";
+  heading.append(textSpan("iOS readiness blocked 清单"));
+  heading.append(tag(blockedCount ? `${blockedCount} 项阻断` : "就绪", blockedCount ? "blocked" : "ready"));
+  card.append(heading);
+
+  const guard = document.createElement("div");
+  guard.className = "details";
+  guard.textContent = "不得启动真实 iOS runner；这里只展示前置资料、签名、设备和 Runner 路线是否满足。";
+  card.append(guard);
+
+  const list = document.createElement("div");
+  list.className = "readiness-list";
+  items.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = `readiness-row ${item.ready ? "ready" : "blocked"}`;
+
+    const title = document.createElement("div");
+    title.className = "title-line";
+    title.append(textSpan(item.label));
+    title.append(tag(item.ready ? "已满足" : "已阻断", item.ready ? "ready" : "blocked"));
+    row.append(title);
+
+    const detail = document.createElement("div");
+    detail.className = "details";
+    if (item.ready) {
+      detail.textContent = "当前 readiness 信号已满足。";
+    } else {
+      const parts = [item.blockedText];
+      if (item.fieldMissing) {
+        parts.push(`缺失字段：${translateField(item.field)}`);
+      }
+      if (item.reasonHit) {
+        parts.push(`阻断原因：${translateReason(item.reason)}`);
+      }
+      parts.push(`下一步：${item.nextAction}`);
+      detail.textContent = parts.join(" ");
+    }
+    row.append(detail);
+    list.append(row);
+  });
+  card.append(list);
+  return card;
+}
+
+function findIosReadiness(payload) {
+  if (!payload) {
+    return null;
+  }
+  const directSources = [
+    payload.readiness,
+    payload.ios_readiness,
+    payload.iosReadiness,
+    payload.capability,
+    payload.run && payload.run.readiness,
+    payload.run && payload.run.ios_readiness,
+    payload.run && payload.run.iosReadiness,
+    payload.run && payload.run.capability,
+  ];
+  for (const source of directSources) {
+    const readiness = normalizeIosReadiness(source, payload.run && payload.run.platform);
+    if (readiness) {
+      return readiness;
+    }
+  }
+
+  for (const event of payload.events || []) {
+    const details = event.details || {};
+    const eventSources = [details.capability, details.readiness, details.ios_readiness, details.iosReadiness, details];
+    for (const source of eventSources) {
+      const readiness = normalizeIosReadiness(source, payload.run && payload.run.platform);
+      if (readiness) {
+        return readiness;
+      }
+    }
+  }
+
+  if (payload.run && payload.run.platform === "ios") {
+    return normalizeIosReadiness(
+      {
+        platform: "ios",
+        ready: false,
+        checks: {},
+        missing_fields: payload.run.missing_fields || payload.run.missingFields || [],
+        blocked_reasons: payload.run.blocked_reasons || payload.run.blockedReasons || [],
+        next_actions: payload.run.next_actions || payload.run.nextActions || [],
+      },
+      "ios",
+    );
+  }
+  return null;
+}
+
+function normalizeIosReadiness(source, fallbackPlatform) {
+  if (!source || typeof source !== "object") {
+    return null;
+  }
+  const platform = source.platform || fallbackPlatform;
+  const blockedReasons = normalizeArray(source.blocked_reasons || source.blockedReasons);
+  const hasIosReason = blockedReasons.some((reason) => String(reason).startsWith("IOS_"));
+  if (platform !== "ios" && !hasIosReason) {
+    return null;
+  }
+  return {
+    platform: "ios",
+    ready: Boolean(source.ready),
+    checks: source.checks || {},
+    missingFields: normalizeArray(source.missing_fields || source.missingFields),
+    blockedReasons,
+    nextActions: normalizeArray(source.next_actions || source.nextActions),
+  };
+}
+
+function normalizeArray(value) {
+  if (Array.isArray(value)) {
+    return value.filter(Boolean);
+  }
+  if (typeof value === "string" && value.trim()) {
+    return value.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
 }
 
 function statusClass(value) {

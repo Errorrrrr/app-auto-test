@@ -545,6 +545,32 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.readiness-card {
+  gap: 10px;
+}
+
+.readiness-list {
+  display: grid;
+  gap: 8px;
+}
+
+.readiness-row {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 9px;
+}
+
+.readiness-row.blocked {
+  border-color: rgba(186, 47, 53, 0.24);
+  background: rgba(186, 47, 53, 0.05);
+}
+
+.readiness-row.ready {
+  border-color: rgba(15, 143, 98, 0.24);
+  background: rgba(15, 143, 98, 0.05);
+}
+
 .event-item {
   display: grid;
   gap: 5px;

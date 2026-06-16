@@ -26,6 +26,18 @@ function createElement(tagName = "div") {
   };
 }
 
+function collectText(node) {
+  if (!node) {
+    return "";
+  }
+  if (typeof node === "string") {
+    return node;
+  }
+  const ownText = node.textContent || "";
+  const childText = (node.children || []).map(collectText).join(" ");
+  return `${ownText} ${childText}`.trim();
+}
+
 function loadApp() {
   class FakeFormData {
     constructor() {
@@ -75,7 +87,7 @@ function loadApp() {
   vm.createContext(context);
   const source = readFileSync(new URL("../src/app_auto_test/web/app.js", import.meta.url), "utf8");
   vm.runInContext(
-    `${source}\nglobalThis.__hooks = { api, createRun, nodes, normalizeTestcaseDraft, renderTestcaseDraft, state };`,
+    `${source}\nglobalThis.__hooks = { api, createRun, nodes, normalizeTestcaseDraft, renderCapability, renderReport, renderTestcaseDraft, state };`,
     context,
   );
   return { context, hooks: context.__hooks };
@@ -163,4 +175,91 @@ test("create run sends confirmed draft review fields", async () => {
   assert.equal(capturedBody.get("flow_review_status"), "confirmed");
   assert.equal(capturedBody.get("flow_draft_id"), "draft-123");
   assert.match(capturedBody.get("flow_json"), /login flow/);
+});
+
+test("iOS capability renders readiness blocked checklist", () => {
+  const { hooks } = loadApp();
+  hooks.nodes.capabilityReady = createElement();
+  hooks.nodes.capabilityPanel = createElement();
+
+  hooks.renderCapability({
+    platform: "ios",
+    ready: false,
+    checks: {
+      iosArtifactProvided: false,
+      bundleIdProvided: false,
+      signingReady: false,
+      deviceAvailable: false,
+      runnerConfigured: false,
+    },
+    missing_fields: ["ipa", "bundleId", "signingProfile", "targetDevice", "runnerType"],
+    blocked_reasons: [
+      "IOS_ARTIFACT_MISSING",
+      "IOS_BUNDLE_ID_MISSING",
+      "IOS_SIGNING_MISSING",
+      "IOS_DEVICE_MISSING",
+      "IOS_RUNNER_MISSING",
+    ],
+    next_actions: [
+      "Provide IPA, bundleId, signing method and a target iOS device or simulator before real iOS execution.",
+    ],
+  });
+
+  const text = collectText(hooks.nodes.capabilityPanel);
+  assert.match(text, /iOS readiness blocked 清单/);
+  assert.match(text, /IPA/);
+  assert.match(text, /bundleId/);
+  assert.match(text, /签名配置/);
+  assert.match(text, /目标设备/);
+  assert.match(text, /Runner 路线/);
+  assert.match(text, /不得启动真实 iOS runner/);
+});
+
+test("report preview renders iOS readiness from event capability details", () => {
+  const { hooks } = loadApp();
+  hooks.nodes.reportView = createElement();
+
+  hooks.renderReport({
+    report: {
+      run_id: "run-ios",
+      status: "blocked",
+      result_summary: "Run blocked: IOS_SIGNING_MISSING",
+      next_actions: [],
+    },
+    run: {
+      run_id: "run-ios",
+      platform: "ios",
+      blocked_reasons: ["IOS_SIGNING_MISSING"],
+      next_actions: [],
+    },
+    events: [
+      {
+        event_type: "HEALTH_CHECKED",
+        details: {
+          platform: "ios",
+          ready: false,
+          checks: {
+            iosArtifactProvided: false,
+            bundleIdProvided: false,
+            signingReady: false,
+            deviceAvailable: false,
+            runnerConfigured: false,
+          },
+          missing_fields: ["ipa", "bundleId", "signingProfile", "targetDevice", "runnerType"],
+          blocked_reasons: ["IOS_SIGNING_MISSING", "IOS_RUNNER_MISSING"],
+          next_actions: [
+            "Provide IPA, bundleId, signing method and a target iOS device or simulator before real iOS execution.",
+          ],
+        },
+      },
+    ],
+    artifacts: [],
+    generatedAt: "2026-06-16T06:18:44Z",
+  });
+
+  const text = collectText(hooks.nodes.reportView);
+  assert.match(text, /iOS readiness blocked 清单/);
+  assert.match(text, /签名配置/);
+  assert.match(text, /Runner 路线/);
+  assert.match(text, /不得启动真实 iOS runner/);
 });
