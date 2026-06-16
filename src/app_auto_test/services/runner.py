@@ -24,12 +24,12 @@ from .providers import (
     ModelAnalysisProvider,
     NoopModelAnalysisProvider,
 )
+from .privacy_patterns import BLOCK_PATTERNS
 from .reports import ReportService
 from .samples import SampleService
 
 
 MAX_COMMAND_LOG_CHARS = 20_000
-SENSITIVE_LOG_KEYS = ("token", "password", "secret")
 
 
 @dataclass
@@ -337,20 +337,15 @@ def _command_output_text(value: str | bytes | None) -> str:
 
 
 def _sanitize_command_log(value: str) -> str:
-    sanitized = value
-    for key in SENSITIVE_LOG_KEYS:
-        sanitized = _redact_assignment(sanitized, key)
+    sanitized = _redact_sensitive_command_log(value)
     if len(sanitized) <= MAX_COMMAND_LOG_CHARS:
         return sanitized
     omitted = len(sanitized) - MAX_COMMAND_LOG_CHARS
     return sanitized[:MAX_COMMAND_LOG_CHARS] + f"\n[TRUNCATED {omitted} chars]"
 
 
-def _redact_assignment(value: str, key: str) -> str:
-    parts = value.split()
-    changed = False
-    for index, part in enumerate(parts):
-        if part.lower().startswith(f"{key}="):
-            parts[index] = f"{key}=[REDACTED]"
-            changed = True
-    return " ".join(parts) if changed else value
+def _redact_sensitive_command_log(value: str) -> str:
+    sanitized = value
+    for finding_type, pattern in BLOCK_PATTERNS:
+        sanitized = pattern.sub(f"[REDACTED:{finding_type}]", sanitized)
+    return sanitized

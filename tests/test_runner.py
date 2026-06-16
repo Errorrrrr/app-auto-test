@@ -12,9 +12,62 @@ from app_auto_test.schemas import (
 )
 from app_auto_test.services.devices import DeviceService
 from app_auto_test.services.reports import ReportService
-from app_auto_test.services.runner import LocalRunner
+from app_auto_test.services.runner import (
+    MAX_COMMAND_LOG_CHARS,
+    LocalRunner,
+    _sanitize_command_log,
+)
 from app_auto_test.services.samples import SampleService
 from app_auto_test.storage import JsonStore
+
+
+def test_command_log_sanitizer_redacts_stdout_stderr_credentials_and_truncates() -> None:
+    secrets = {
+        "access_token": "atk_live_1234567890",
+        "api_key": "sk_live_1234567890",
+        "authorization": "eyJhbGciOiJIUzI1NiJ9.token1234.sig",
+        "cookie": "sessionid=SID1234567890; csrftoken=CSRF123456",
+        "sessionid": "SID1234567890",
+        "passwd": "p4ssw0rd!",
+    }
+    raw_outputs = {
+        "stdout": "\n".join(
+            [
+                f"access_token={secrets['access_token']}",
+                f"api_key: {secrets['api_key']}",
+                f"Authorization: Bearer {secrets['authorization']}",
+                f"cookie={secrets['cookie']}",
+                f"sessionid={secrets['sessionid']}",
+                f"passwd={secrets['passwd']}",
+            ]
+        )
+        + "\n"
+        + ("x" * (MAX_COMMAND_LOG_CHARS + 25)),
+        "stderr": "\n".join(
+            [
+                f"access-token={secrets['access_token']}",
+                f"api-key={secrets['api_key']}",
+                f"authorization=Bearer {secrets['authorization']}",
+                f"Cookie: {secrets['cookie']}",
+                f"session_id={secrets['sessionid']}",
+                f"PASSWD={secrets['passwd']}",
+            ]
+        )
+        + "\n"
+        + ("y" * (MAX_COMMAND_LOG_CHARS + 25)),
+    }
+
+    for raw in raw_outputs.values():
+        sanitized = _sanitize_command_log(raw)
+
+        for secret in secrets.values():
+            assert secret not in sanitized
+        assert "[REDACTED:token]" in sanitized
+        assert "[REDACTED:api_key]" in sanitized
+        assert "[REDACTED:authorization]" in sanitized
+        assert "[REDACTED:cookie]" in sanitized
+        assert "[REDACTED:password]" in sanitized
+        assert "[TRUNCATED " in sanitized
 
 
 def test_runner_writes_events_and_report_when_blocked(tmp_path: Path) -> None:
