@@ -53,8 +53,13 @@ def test_create_run_with_uploaded_apk_generates_blocked_report(tmp_path: Path, m
 
     artifact_response = client.get(f"/api/v1/runs/{run['run_id']}/artifacts")
     assert artifact_response.status_code == 200
-    artifact_names = [item["name"] for item in artifact_response.json()["data"]["items"]]
+    artifacts = artifact_response.json()["data"]["items"]
+    artifact_names = [item["name"] for item in artifacts]
     assert "flow.yaml" in artifact_names
+    flow_artifact = next(item for item in artifacts if item["name"] == "flow.yaml")
+    assert flow_artifact["storage_provider"] == "local-filesystem"
+    assert flow_artifact["uri"].startswith(f"local://runs/{run['run_id']}/")
+    assert len(flow_artifact["sha256"]) == 64
 
     flow_response = client.get(f"/api/v1/runs/{run['run_id']}/artifacts/maestro-flow")
     assert flow_response.status_code == 200
@@ -78,6 +83,54 @@ def test_device_contract_returns_placeholder_when_adb_missing(tmp_path: Path, mo
     assert item["id"] == "android-adb-unavailable"
     assert item["selectable"] is False
     assert item["blocked_reason"] == "ADB_NOT_FOUND"
+
+
+def test_provider_readiness_exposes_pre_real_boundaries(tmp_path: Path) -> None:
+    app = create_app(Settings(data_dir=tmp_path, allow_real_execution=False))
+    client = TestClient(app)
+
+    response = client.get("/api/v1/providers/readiness")
+
+    assert response.status_code == 200
+    items = {item["kind"]: item for item in response.json()["data"]["items"]}
+    assert items["execution"]["blocked_reasons"] == ["REAL_EXECUTION_DISABLED"]
+    assert items["artifact"]["name"] == "local-filesystem"
+    assert items["artifact"]["checks"]["ossConfigured"] is False
+    assert items["model"]["name"] == "noop-model"
+    assert items["model"]["external_calls_enabled"] is False
+
+
+def test_android_capability_preflight_rejects_invalid_inputs(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    app = create_app(
+        Settings(
+            data_dir=tmp_path,
+            adb_path=str(tmp_path / "missing-adb"),
+            maestro_bin="missing-maestro",
+            allow_real_execution=False,
+        )
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/capabilities/check",
+        data={
+            "platform": "android",
+            "device_id": "bad id;rm",
+            "apk_path": str(tmp_path / "missing.apk"),
+            "package_name": "not a package",
+        },
+    )
+
+    assert response.status_code == 200
+    capability = response.json()["data"]
+    assert capability["ready"] is False
+    assert capability["checks"]["deviceIdSafe"] is False
+    assert capability["checks"]["apkFileExists"] is False
+    assert capability["checks"]["packageNameValid"] is False
+    assert "ANDROID_DEVICE_ID_INVALID" in capability["blocked_reasons"]
+    assert "APK_FILE_NOT_FOUND" in capability["blocked_reasons"]
+    assert "PACKAGE_NAME_INVALID" in capability["blocked_reasons"]
 
 
 def test_create_run_rejects_flow_yaml_injection(tmp_path: Path) -> None:

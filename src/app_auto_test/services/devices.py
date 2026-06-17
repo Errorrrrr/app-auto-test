@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+import re
 import shutil
 import subprocess
 
@@ -7,7 +9,13 @@ from ..config import Settings
 from ..schemas import CapabilityDTO, DeviceDTO, DeviceKind, DeviceStatus, Platform
 
 
+PACKAGE_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$")
+SAFE_DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]+$")
+
+
 class DeviceService:
+    provider_name = "local-device"
+
     def __init__(self, settings: Settings):
         self.settings = settings
 
@@ -23,20 +31,34 @@ class DeviceService:
         apk_path: str | None,
         package_name: str | None,
     ) -> CapabilityDTO:
-        devices = self._list_android_devices()
-        selected_device = next((item for item in devices if item.id == device_id), None)
+        adb_config_safe = _safe_command_value(self.settings.adb_path)
+        maestro_config_safe = _safe_command_value(self.settings.maestro_bin)
         adb = self.resolve_adb_command()
+        devices = self._list_android_devices() if adb else []
+        device_id_safe = bool(device_id and SAFE_DEVICE_ID_PATTERN.fullmatch(device_id))
+        selected_device = (
+            next((item for item in devices if item.id == device_id), None)
+            if device_id_safe
+            else None
+        )
         adb_exists = adb is not None
-        maestro_exists = shutil.which(self.settings.maestro_bin) is not None
+        maestro_exists = self.resolve_maestro_command() is not None
         apk_present = bool(apk_path)
+        apk_file_exists = bool(apk_path and Path(apk_path).is_file())
         package_present = bool(package_name)
+        package_valid = bool(package_name and PACKAGE_NAME_PATTERN.fullmatch(package_name))
         ready = all(
             [
+                adb_config_safe,
                 adb_exists,
+                maestro_config_safe,
                 selected_device is not None,
                 selected_device.selectable if selected_device else False,
                 apk_present,
+                apk_file_exists,
                 package_present,
+                package_valid,
+                device_id_safe,
                 maestro_exists,
                 self.settings.allow_real_execution,
             ]
@@ -45,27 +67,47 @@ class DeviceService:
         missing: list[str] = []
         blocked: list[str] = []
         actions: list[str] = []
+        if not adb_config_safe:
+            _append_unique(missing, "adb")
+            blocked.append("ADB_COMMAND_UNSAFE")
+            actions.append("Set APP_AUTO_TEST_ADB_PATH to a single executable path without control characters.")
         if not adb_exists:
-            missing.append("adb")
+            _append_unique(missing, "adb")
             blocked.append("ADB_NOT_FOUND")
             actions.append("Set APP_AUTO_TEST_ADB_PATH or add adb to PATH.")
-        if not selected_device:
-            missing.append("deviceId")
+        if not maestro_config_safe:
+            _append_unique(missing, "maestro")
+            blocked.append("MAESTRO_COMMAND_UNSAFE")
+            actions.append("Set APP_AUTO_TEST_MAESTRO_BIN to a single command or executable path without control characters.")
+        if not device_id:
+            _append_unique(missing, "deviceId")
             blocked.append("ANDROID_DEVICE_NOT_SELECTED")
+            actions.append("Select one online Android device or emulator in the tool.")
+        elif not device_id_safe:
+            blocked.append("ANDROID_DEVICE_ID_INVALID")
+            actions.append("Use a deviceId containing only letters, numbers, dot, underscore, colon or hyphen.")
+        elif not selected_device:
+            blocked.append("ANDROID_DEVICE_NOT_FOUND")
             actions.append("Select one online Android device or emulator in the tool.")
         elif not selected_device.selectable:
             blocked.append("ANDROID_DEVICE_NOT_ONLINE")
             actions.append("Start the selected emulator or reconnect the Android device.")
         if not apk_present:
-            missing.append("apk")
+            _append_unique(missing, "apk")
             blocked.append("APK_MISSING")
             actions.append("Upload an APK when creating the test run.")
+        elif not apk_file_exists:
+            blocked.append("APK_FILE_NOT_FOUND")
+            actions.append("Re-upload the APK; the stored file is missing from the local data directory.")
         if not package_present:
-            missing.append("packageName")
+            _append_unique(missing, "packageName")
             blocked.append("PACKAGE_NAME_MISSING")
             actions.append("Provide packageName or install aapt so it can be inferred.")
+        elif not package_valid:
+            blocked.append("PACKAGE_NAME_INVALID")
+            actions.append("Provide a valid Android packageName such as com.example.app.")
         if not maestro_exists:
-            missing.append("maestro")
+            _append_unique(missing, "maestro")
             blocked.append("MAESTRO_NOT_FOUND")
             actions.append("Install Maestro or configure APP_AUTO_TEST_MAESTRO_BIN.")
         if not self.settings.allow_real_execution:
@@ -76,11 +118,16 @@ class DeviceService:
             platform=Platform.android,
             ready=ready,
             checks={
+                "adbCommandSafe": adb_config_safe,
                 "adbAvailable": adb_exists,
+                "maestroCommandSafe": maestro_config_safe,
                 "deviceSelected": selected_device is not None,
                 "deviceOnline": bool(selected_device and selected_device.selectable),
+                "deviceIdSafe": device_id_safe,
                 "apkUploaded": apk_present,
+                "apkFileExists": apk_file_exists,
                 "packageNameProvided": package_present,
+                "packageNameValid": package_valid,
                 "maestroAvailable": maestro_exists,
                 "realExecutionEnabled": self.settings.allow_real_execution,
             },
@@ -131,9 +178,16 @@ class DeviceService:
         )
 
     def resolve_adb_command(self) -> str | None:
+        if not _safe_command_value(self.settings.adb_path):
+            return None
         if shutil.which(self.settings.adb_path):
             return self.settings.adb_path
         return shutil.which("adb")
+
+    def resolve_maestro_command(self) -> str | None:
+        if not _safe_command_value(self.settings.maestro_bin):
+            return None
+        return shutil.which(self.settings.maestro_bin)
 
     def _list_android_devices(self) -> list[DeviceDTO]:
         adb = self.resolve_adb_command()
@@ -219,3 +273,15 @@ class DeviceService:
                 blocked_reason=",".join(capability.blocked_reasons),
             )
         ]
+
+
+def _safe_command_value(value: str) -> bool:
+    candidate = value.strip()
+    if not candidate:
+        return False
+    return not any(char in candidate for char in ("\r", "\n", "\x00"))
+
+
+def _append_unique(values: list[str], value: str) -> None:
+    if value not in values:
+        values.append(value)

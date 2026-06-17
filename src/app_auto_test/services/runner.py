@@ -11,23 +11,25 @@ from ..schemas import (
     ReportStatus,
     RunEventDTO,
     RunMode,
-    RunArtifactDTO,
     RunStatus,
     TestRunDTO,
     utc_now,
 )
 from ..storage import JsonStore
 from .devices import DeviceService
+from .providers import (
+    ArtifactProvider,
+    ExecutionProvider,
+    LocalArtifactProvider,
+    ModelAnalysisProvider,
+    NoopModelAnalysisProvider,
+)
+from .privacy_patterns import BLOCK_PATTERNS
 from .reports import ReportService
 from .samples import SampleService
 
 
-ARTIFACT_SPECS = {
-    "flow.yaml": ("maestro_flow", "text/yaml"),
-    "maestro-stdout.log": ("maestro_stdout", "text/plain"),
-    "maestro-stderr.log": ("maestro_stderr", "text/plain"),
-    "execution.json": ("execution_json", "application/json"),
-}
+MAX_COMMAND_LOG_CHARS = 20_000
 
 
 @dataclass
@@ -41,6 +43,8 @@ class MaestroExecutionResult:
 
 
 class MaestroRunner:
+    provider_name = "local-maestro"
+
     def __init__(
         self,
         *,
@@ -136,8 +140,8 @@ class MaestroRunner:
             "startedAt": started_at,
             "finishedAt": utc_now(),
         }
-        stdout_path.write_text("\n".join(stdout_parts), encoding="utf-8")
-        stderr_path.write_text("\n".join(stderr_parts), encoding="utf-8")
+        stdout_path.write_text(_sanitize_command_log("\n".join(stdout_parts)), encoding="utf-8")
+        stderr_path.write_text(_sanitize_command_log("\n".join(stderr_parts)), encoding="utf-8")
         execution_path.write_text(
             json.dumps(execution, indent=2, ensure_ascii=False),
             encoding="utf-8",
@@ -161,17 +165,22 @@ class LocalRunner:
         device_service: DeviceService,
         sample_service: SampleService,
         report_service: ReportService,
+        execution_provider: ExecutionProvider | None = None,
+        artifact_provider: ArtifactProvider | None = None,
+        model_provider: ModelAnalysisProvider | None = None,
     ):
         self.settings = settings
         self.store = store
         self.device_service = device_service
         self.sample_service = sample_service
         self.report_service = report_service
-        self.maestro_runner = MaestroRunner(
+        self.execution_provider = execution_provider or MaestroRunner(
             settings=settings,
             store=store,
             sample_service=sample_service,
         )
+        self.artifact_provider = artifact_provider or LocalArtifactProvider(store)
+        self.model_provider = model_provider or NoopModelAnalysisProvider()
 
     def start(self, run: TestRunDTO) -> TestRunDTO:
         run_dir = self.store.run_dir(run.run_id)
@@ -184,7 +193,7 @@ class LocalRunner:
         self._event(run, "HEALTH_CHECKED", RunStatus.health_checked, "Capability check completed.", capability.model_dump())
 
         if run.sample_flow:
-            flow_path = self.maestro_runner.write_flow(run)
+            flow_path = self.execution_provider.write_flow(run)
             self.refresh_artifacts(run)
             self._event(
                 run,
@@ -250,7 +259,13 @@ class LocalRunner:
         run.blocked_reasons = []
         run.next_actions = []
         run.status = RunStatus.running
-        self._event(run, "RUN_STARTED", RunStatus.running, "Android local execution started.")
+        self._event(
+            run,
+            "RUN_STARTED",
+            RunStatus.running,
+            "Android execution provider started.",
+            {"provider": self.execution_provider.provider_name},
+        )
         self._event(
             run,
             "MAESTRO_STARTED",
@@ -258,7 +273,7 @@ class LocalRunner:
             "Maestro execution started.",
             {"flowPath": str(self.store.run_dir(run.run_id) / "flow.yaml")},
         )
-        result = self.maestro_runner.execute_android(run, adb)
+        result = self.execution_provider.execute_android(run, adb)
         self.refresh_artifacts(run)
         if result.passed:
             run.status = RunStatus.passed
@@ -290,13 +305,8 @@ class LocalRunner:
         run.report_status = report.status if run.status != RunStatus.failed else ReportStatus.generated
         return self.store.save_run(run)
 
-    def refresh_artifacts(self, run: TestRunDTO) -> list[RunArtifactDTO]:
-        run_dir = self.store.run_dir(run.run_id)
-        run.artifacts = [
-            _artifact_from_path(name, run_dir / name)
-            for name in ARTIFACT_SPECS
-            if (run_dir / name).exists()
-        ]
+    def refresh_artifacts(self, run: TestRunDTO):
+        run.artifacts = self.artifact_provider.list_run_artifacts(run)
         return run.artifacts
 
     def _event(
@@ -318,21 +328,24 @@ class LocalRunner:
         )
         self.store.append_event(run.run_id, event.model_dump())
 
-
-def _artifact_from_path(name: str, path: Path) -> RunArtifactDTO:
-    kind, media_type = ARTIFACT_SPECS[name]
-    return RunArtifactDTO(
-        name=name,
-        kind=kind,
-        path=str(path),
-        media_type=media_type,
-        size_bytes=path.stat().st_size,
-    )
-
-
 def _command_output_text(value: str | bytes | None) -> str:
     if value is None:
         return ""
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value
+
+
+def _sanitize_command_log(value: str) -> str:
+    sanitized = _redact_sensitive_command_log(value)
+    if len(sanitized) <= MAX_COMMAND_LOG_CHARS:
+        return sanitized
+    omitted = len(sanitized) - MAX_COMMAND_LOG_CHARS
+    return sanitized[:MAX_COMMAND_LOG_CHARS] + f"\n[TRUNCATED {omitted} chars]"
+
+
+def _redact_sensitive_command_log(value: str) -> str:
+    sanitized = value
+    for finding_type, pattern in BLOCK_PATTERNS:
+        sanitized = pattern.sub(f"[REDACTED:{finding_type}]", sanitized)
+    return sanitized

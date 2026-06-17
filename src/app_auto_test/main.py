@@ -29,6 +29,7 @@ from .schemas import (
 from .services.assets import AssetService
 from .services.devices import DeviceService
 from .services.flow_validation import flow_hash, validate_flow_payload
+from .services.providers import LocalArtifactProvider, NoopModelAnalysisProvider
 from .services.reports import ReportService
 from .services.runner import LocalRunner
 from .services.samples import SampleService
@@ -44,12 +45,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     device_service = DeviceService(settings)
     sample_service = SampleService()
     report_service = ReportService(store)
+    artifact_provider = LocalArtifactProvider(store)
+    model_provider = NoopModelAnalysisProvider()
     runner = LocalRunner(
         settings=settings,
         store=store,
         device_service=device_service,
         sample_service=sample_service,
         report_service=report_service,
+        artifact_provider=artifact_provider,
+        model_provider=model_provider,
     )
 
     app = FastAPI(
@@ -92,7 +97,61 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ],
                 provider_boundary="Only the local runner may call adb or Maestro; generated flows require review.",
                 real_execution_enabled=settings.allow_real_execution,
+                provider_boundaries={
+                    "execution": "ExecutionProvider is local Maestro and remains gated by APP_AUTO_TEST_ALLOW_REAL_EXECUTION.",
+                    "device": "DeviceProvider only performs local readiness checks until real device inputs are supplied.",
+                    "artifact": "ArtifactProvider stores files under APP_AUTO_TEST_DATA_DIR; real OSS is not configured.",
+                    "model": "ModelAnalysisProvider is noop and never calls an external model.",
+                },
+                local_gate_commands=["scripts/local-gate.sh"],
             )
+        )
+
+    @app.get("/api/v1/providers/readiness", response_model=ApiResponse)
+    def provider_readiness() -> ApiResponse:
+        execution_blocked = [] if settings.allow_real_execution else ["REAL_EXECUTION_DISABLED"]
+        execution_actions = (
+            []
+            if settings.allow_real_execution
+            else ["Set APP_AUTO_TEST_ALLOW_REAL_EXECUTION=true only after runner permissions and device inputs are reviewed."]
+        )
+        return ApiResponse(
+            data={
+                "items": [
+                    {
+                        "name": runner.execution_provider.provider_name,
+                        "kind": "execution",
+                        "mode": "local",
+                        "ready": settings.allow_real_execution,
+                        "checks": {
+                            "realExecutionEnabled": settings.allow_real_execution,
+                            "androidOnly": True,
+                            "iosProviderConfigured": False,
+                        },
+                        "blocked_reasons": execution_blocked,
+                        "next_actions": execution_actions,
+                        "external_calls_enabled": settings.allow_real_execution,
+                    },
+                    {
+                        "name": device_service.provider_name,
+                        "kind": "device",
+                        "mode": "local",
+                        "ready": False,
+                        "checks": {
+                            "androidPreflightAvailable": True,
+                            "iosReadinessOnly": True,
+                            "realDeviceAttachedByThisEndpoint": False,
+                        },
+                        "blocked_reasons": ["REAL_DEVICE_INPUTS_NOT_CONFIRMED"],
+                        "next_actions": [
+                            "Provide target devices or a cloud-device plan before real provider validation.",
+                        ],
+                        "external_calls_enabled": False,
+                    },
+                    artifact_provider.readiness(),
+                    model_provider.readiness(),
+                ]
+            }
         )
 
     @app.get("/api/v1/devices", response_model=ApiResponse)

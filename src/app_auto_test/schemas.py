@@ -56,6 +56,13 @@ class RunMode(str, Enum):
     execute = "execute"
 
 
+class ModelAnalysisStatus(str, Enum):
+    skipped = "skipped"
+    blocked = "blocked"
+    completed = "completed"
+    failed = "failed"
+
+
 class AgentProvider(str, Enum):
     codex = "codex"
     cursor = "cursor"
@@ -286,6 +293,12 @@ class RunArtifactDTO(BaseModel):
     path: str
     media_type: str
     size_bytes: int
+    sha256: str | None = None
+    storage_provider: str = "local-filesystem"
+    uri: str | None = None
+    retention_days: int | None = None
+    signed_url: str | None = None
+    signed_url_expires_at: str | None = None
     created_at: str = Field(default_factory=utc_now)
 
 
@@ -341,6 +354,34 @@ class ToolManifestDTO(BaseModel):
     denied_tools: list[str]
     provider_boundary: str
     real_execution_enabled: bool
+    provider_boundaries: dict[str, str] = Field(default_factory=dict)
+    local_gate_commands: list[str] = Field(default_factory=list)
+
+
+class ProviderReadinessDTO(BaseModel):
+    name: str
+    kind: Literal["execution", "device", "artifact", "model"]
+    mode: Literal["local", "noop", "blocked"]
+    ready: bool
+    checks: dict[str, bool] = Field(default_factory=dict)
+    blocked_reasons: list[str] = Field(default_factory=list)
+    next_actions: list[str] = Field(default_factory=list)
+    external_calls_enabled: bool = False
+
+
+class ModelAnalysisRequestDTO(BaseModel):
+    run_id: str
+    privacy_status: PrivacyStatus = PrivacyStatus.unscanned
+    sanitized_payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelAnalysisResultDTO(BaseModel):
+    provider: str
+    status: ModelAnalysisStatus
+    summary: str
+    external_call_made: bool = False
+    blocked_reasons: list[str] = Field(default_factory=list)
+    audit: dict[str, Any] = Field(default_factory=dict)
 
 
 def path_to_str(path: Path | None) -> str | None:
