@@ -91,10 +91,17 @@ function loadApp() {
   vm.createContext(context);
   const source = readFileSync(new URL("../src/app_auto_test/web/app.js", import.meta.url), "utf8");
   vm.runInContext(
-    `${source}\nglobalThis.__hooks = { api, createRun, nodes, normalizeTestcaseDraft, renderCapability, renderReport, renderTestcaseDraft, state };`,
+    `${source}\nglobalThis.__hooks = { api, createRun, deriveVerificationScope, nodes, normalizeTestcaseDraft, renderAgentPrompt, renderCapability, renderReport, renderTestcaseDraft, state };`,
     context,
   );
   return { context, hooks: context.__hooks };
+}
+
+function prepareScopeNodes(hooks) {
+  hooks.nodes.agentPrompt = { value: "" };
+  hooks.nodes.flowEditor = { value: "" };
+  hooks.nodes.packageName = { value: "com.example.app" };
+  hooks.nodes.testcaseFile = { files: [] };
 }
 
 function fetchIosCapabilityFromApi() {
@@ -147,6 +154,89 @@ test("api exposes backend 400 detail code and message", async () => {
     assert.equal(error.message, "YAML files are not supported.");
     return true;
   });
+});
+
+test("setup form no longer exposes user-entered verification goal field", () => {
+  const removedFieldId = ["test", "Goal"].join("");
+  const removedLabel = "\u6d4b\u8bd5\u76ee\u6807";
+  const indexHtml = readFileSync(new URL("../src/app_auto_test/web/index.html", import.meta.url), "utf8");
+  const appSource = readFileSync(new URL("../src/app_auto_test/web/app.js", import.meta.url), "utf8");
+
+  assert.doesNotMatch(indexHtml, new RegExp(`id=["']${removedFieldId}["']`));
+  assert.doesNotMatch(indexHtml, new RegExp(`>${removedLabel}<`));
+  assert.doesNotMatch(appSource, new RegExp(`nodes\\.${removedFieldId}\\b`));
+});
+
+test("verification scope prefers current flow name", () => {
+  const { hooks } = loadApp();
+  prepareScopeNodes(hooks);
+  hooks.nodes.flowEditor.value = JSON.stringify({
+    name: "登录冒烟流程",
+    package_name: "com.example.app",
+    steps: [{ action: "launchApp", target: "com.example.app" }],
+  });
+
+  assert.equal(hooks.deriveVerificationScope(), "登录冒烟流程");
+});
+
+test("verification scope falls back to actionable current flow step", () => {
+  const { hooks } = loadApp();
+  prepareScopeNodes(hooks);
+  hooks.nodes.flowEditor.value = JSON.stringify({
+    package_name: "com.example.app",
+    steps: [{ action: "assertVisible", text: "首页用户名" }],
+  });
+
+  assert.equal(hooks.deriveVerificationScope(), "确认首页用户名可见");
+});
+
+test("verification scope uses draft sample flow before material summary", () => {
+  const { hooks } = loadApp();
+  prepareScopeNodes(hooks);
+  hooks.state.testcaseDraft = {
+    sample_flow: {
+      name: "订单列表验证",
+      package_name: "com.example.app",
+      steps: [{ action: "assertVisible", text: "待支付订单" }],
+    },
+    redacted_preview: "应被更低优先级忽略",
+    unmapped_fragments: ["也应被忽略"],
+    asset: { file_name: "orders.md" },
+  };
+
+  assert.equal(hooks.deriveVerificationScope(), "订单列表验证");
+});
+
+test("verification scope falls back through preview, fragments, file name and default", () => {
+  const { hooks } = loadApp();
+  prepareScopeNodes(hooks);
+
+  hooks.state.testcaseDraft = { redacted_preview: "\n步骤 1：进入个人中心\n步骤 2：确认昵称" };
+  assert.equal(hooks.deriveVerificationScope(), "进入个人中心");
+
+  hooks.state.testcaseDraft = { redacted_preview: "", unmapped_fragments: ["- 查看优惠券入口"] };
+  assert.equal(hooks.deriveVerificationScope(), "查看优惠券入口");
+
+  hooks.state.testcaseDraft = { redacted_preview: "", unmapped_fragments: [], asset: { file_name: "login-smoke.md" } };
+  assert.equal(hooks.deriveVerificationScope(), "login smoke");
+
+  hooks.state.testcaseDraft = null;
+  hooks.nodes.testcaseFile = { files: [] };
+  assert.equal(hooks.deriveVerificationScope(), "打开应用并确认首页可见");
+});
+
+test("agent prompt renders derived verification scope", () => {
+  const { hooks } = loadApp();
+  prepareScopeNodes(hooks);
+  hooks.nodes.flowEditor.value = JSON.stringify({
+    package_name: "com.example.app",
+    steps: [{ action: "assertVisible", text: "支付成功" }],
+  });
+
+  hooks.renderAgentPrompt();
+
+  assert.match(hooks.nodes.agentPrompt.value, /验证范围：确认支付成功可见/);
+  assert.doesNotMatch(hooks.nodes.agentPrompt.value, /\u6d4b\u8bd5\u76ee\u6807/);
 });
 
 test("testcase failure panel renders real 400 error code", () => {

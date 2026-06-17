@@ -249,6 +249,8 @@ const FALLBACK_MANIFEST = {
   real_execution_enabled: false,
 };
 
+const DEFAULT_VERIFICATION_SCOPE = "打开应用并确认首页可见";
+
 const state = {
   health: null,
   devices: [],
@@ -279,7 +281,6 @@ function bindNodes() {
     "testName",
     "apkFile",
     "packageName",
-    "testGoal",
     "deviceSelect",
     "generateButton",
     "createButton",
@@ -334,7 +335,6 @@ function bindEvents() {
     markFlowDirty();
   });
   nodes.testName.addEventListener("input", renderAgentPrompt);
-  nodes.testGoal.addEventListener("input", renderAgentPrompt);
   nodes.flowEditor.addEventListener("input", markFlowDirty);
   nodes.validateFlowButton.addEventListener("click", () => validateFlow());
   nodes.confirmFlowButton.addEventListener("click", confirmFlow);
@@ -505,7 +505,7 @@ function renderAgentPrompt() {
   const providerLabel = provider === "manual" ? "人工编写" : provider === "cursor" ? "Cursor Agent" : "Codex";
   const platform = getSelectedPlatform();
   const packageName = nodes.packageName.value.trim() || "com.example.app";
-  const goal = nodes.testGoal.value.trim() || "打开应用并确认首页可见";
+  const verificationScope = deriveVerificationScope();
   const allowedActions = Object.keys(ACTION_LABELS).join(", ");
   nodes.agentPrompt.value = [
     `你是 ${providerLabel}，请为 App 自动化测试生成一个 SampleFlowDTO JSON。`,
@@ -520,7 +520,7 @@ function renderAgentPrompt() {
     "当前输入：",
     `- 平台：${translatePlatform(platform)}`,
     `- 包名：${packageName}`,
-    `- 测试目标：${goal}`,
+    `- 验证范围：${verificationScope}`,
     `- 运行模式：${translateRunMode(getSelectedRunMode())}`,
     "",
     "JSON 结构示例：",
@@ -542,6 +542,128 @@ function renderAgentPrompt() {
       2,
     ),
   ].join("\n");
+}
+
+function deriveVerificationScope() {
+  const currentFlowScope = deriveScopeFromFlow(readFlowPayloadForScope());
+  if (currentFlowScope) {
+    return currentFlowScope;
+  }
+
+  const draft = state.testcaseDraft || {};
+  const draftFlowScope = deriveScopeFromFlow(draft.sample_flow);
+  if (draftFlowScope) {
+    return draftFlowScope;
+  }
+
+  const previewScope = firstMeaningfulLine(draft.redacted_preview);
+  if (previewScope) {
+    return previewScope;
+  }
+
+  const fragmentScope = firstMeaningfulLine((draft.unmapped_fragments || []).find(Boolean));
+  if (fragmentScope) {
+    return fragmentScope;
+  }
+
+  const draftFileScope = scopeFromFileName(draft.asset && draft.asset.file_name);
+  if (draftFileScope) {
+    return draftFileScope;
+  }
+
+  const selectedFileScope = scopeFromFileName(nodes.testcaseFile?.files?.[0]?.name);
+  return selectedFileScope || DEFAULT_VERIFICATION_SCOPE;
+}
+
+function readFlowPayloadForScope() {
+  const raw = nodes.flowEditor && typeof nodes.flowEditor.value === "string" ? nodes.flowEditor.value.trim() : "";
+  if (!raw) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function deriveScopeFromFlow(flow) {
+  if (!isPlainObject(flow)) {
+    return "";
+  }
+  const name = normalizeScopeText(flow.name);
+  if (name) {
+    return name;
+  }
+  const steps = Array.isArray(flow.steps) ? flow.steps : [];
+  return steps.map(scopeFromSpecificStep).find(Boolean) || steps.map(scopeFromStep).find(Boolean) || "";
+}
+
+function scopeFromSpecificStep(step) {
+  if (!isPlainObject(step)) {
+    return "";
+  }
+  const value = normalizeScopeText(step.text || step.target || step.note);
+  if (step.action === "assertVisible" && value) {
+    return `确认${value}可见`;
+  }
+  if (step.action === "tapOn" && value) {
+    return `点击${value}`;
+  }
+  if (step.action === "inputText" && value) {
+    return `输入${value}`;
+  }
+  if (step.action === "takeScreenshot") {
+    return value ? `采集${value}截图` : "采集截图";
+  }
+  if (step.action === "scroll") {
+    return "滑动页面";
+  }
+  if (step.action === "back") {
+    return "返回上一页";
+  }
+  return "";
+}
+
+function scopeFromStep(step) {
+  if (!isPlainObject(step)) {
+    return "";
+  }
+  if (step.action === "launchApp") {
+    return "打开应用";
+  }
+  return scopeFromSpecificStep(step);
+}
+
+function firstMeaningfulLine(value) {
+  if (Array.isArray(value)) {
+    return value.map(firstMeaningfulLine).find(Boolean) || "";
+  }
+  return String(value || "")
+    .split(/\r?\n/)
+    .map(normalizeScopeText)
+    .find(Boolean) || "";
+}
+
+function normalizeScopeText(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value
+    .replace(/[\r\n\x00]+/g, " ")
+    .replace(/^\s*(?:[-*]|\d+[.)]|步骤\s*\d+[:：]?)\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 100);
+}
+
+function scopeFromFileName(fileName) {
+  const normalized = normalizeScopeText(fileName);
+  if (!normalized) {
+    return "";
+  }
+  const withoutExtension = normalized.replace(/\.[^.]+$/, "");
+  return withoutExtension.replace(/[_-]+/g, " ").trim();
 }
 
 async function handlePlatformChange() {
@@ -629,6 +751,7 @@ function handleTestcaseFileChange() {
   state.flowConfirmed = false;
   renderTestcaseDraft();
   renderValidation();
+  renderAgentPrompt();
 }
 
 async function uploadTestcaseFile() {
@@ -706,6 +829,7 @@ function applyTestcaseDraft(draft, options = {}) {
   nodes.sampleStatus.textContent = state.testcaseDraft.flow_review_status === "confirmed" ? "文件用例已确认" : "文件用例待确认";
   renderTestcaseDraft();
   renderValidation();
+  renderAgentPrompt();
 }
 
 function normalizeTestcaseDraft(draft) {
@@ -791,7 +915,7 @@ async function generateSample() {
     const payload = {
       app_name: nodes.testName.value.trim() || "Android App",
       package_name: nodes.packageName.value.trim() || null,
-      goal: nodes.testGoal.value.trim() || null,
+      goal: deriveVerificationScope(),
       platform: getSelectedPlatform(),
     };
     const response = await api("/api/v1/samples/generate", {
@@ -806,6 +930,7 @@ async function generateSample() {
     nodes.flowEditor.value = JSON.stringify(state.sample, null, 2);
     nodes.sampleStatus.textContent = "样例已生成";
     nodes.flowJsonStatus.textContent = "待校验";
+    renderAgentPrompt();
     renderTestcaseDraft();
     renderValidation();
     showToast("SampleFlowDTO 样例已生成，请校验并确认。");
@@ -1063,6 +1188,7 @@ function markFlowDirty() {
     renderTestcaseDraft();
   }
   renderValidation();
+  renderAgentPrompt();
 }
 
 async function createRun(event) {
